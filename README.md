@@ -4,12 +4,16 @@ This Streamlit app visualizes a toy 3D N-body gravitational problem.
 
 The left panel integrates Newtonian gravity. The right panel integrates Newtonian gravity plus a pairwise two-body first post-Newtonian (1PN) correction inspired by General Relativity.
 
-This fast version is optimized for Streamlit Community Cloud:
+This version is optimized for Streamlit Community Cloud:
 
-- it does **not** use `streamlit-autorefresh` for playback;
+- it does **not** use `streamlit-autorefresh`;
+- all expensive controls are inside a Streamlit form;
+- moving sliders does not immediately recompute the simulation;
+- click **Apply and recompute** to apply changed parameters;
 - trajectories are computed once and cached;
 - trajectory curves are drawn as static downsampled 3D lines;
-- Plotly animation updates only the body marker positions in the browser.
+- Plotly animation updates only the body marker positions in the browser;
+- visible **Play / Pause / Reset** buttons are placed above the Plotly figure.
 
 ## Local run
 

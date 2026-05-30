@@ -23,13 +23,6 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
 
-try:
-    from streamlit_autorefresh import st_autorefresh
-    HAS_AUTOREFRESH = True
-except Exception:
-    HAS_AUTOREFRESH = False
-
-
 # =============================================================================
 # Defaults, translations, presets
 # =============================================================================
@@ -54,13 +47,9 @@ DEFAULTS = {
     "marker_mass_gamma": 0.35,
     "log10_c": 2.0,
     "pn_log10": 0.0,
-    "live_interval_ms": 120,
-    "frames_per_refresh": 3,
-    "loop_playback": True,
-    "use_plotly_animation": True,
-    "max_animation_frames": 140,
-    "animation_frame_duration": 40,
-    "orbit_curve_points": 1200,
+    "max_animation_frames": 120,
+    "animation_frame_duration": 35,
+    "orbit_curve_points": 900,
 }
 
 # Default body values are overwritten by the default preset during initialization.
@@ -231,7 +220,7 @@ TR = {
         "max_animation_frames": "Max Plotly animation frames",
         "animation_frame_duration": "Animation frame duration [ms]",
         "orbit_curve_points": "Max points per trajectory curve",
-        "browser_animation_note": "For smooth playback, use the Plotly Play button inside the graph. The app no longer reruns Streamlit every animation frame; the browser animates only the body markers while trajectory curves stay static.",
+        "browser_animation_note": "Use the Play / Pause / Reset buttons above the Plotly graph. Playback runs in the browser; Streamlit does not rerun for every animation frame.",
         "start": "▶ Start",
         "pause": "⏸ Pause",
         "reset_time": "↺ Reset time",
@@ -291,7 +280,7 @@ TR = {
         "max_animation_frames": "Maximální počet Plotly animačních snímků",
         "animation_frame_duration": "Délka animačního snímku [ms]",
         "orbit_curve_points": "Maximální počet bodů na křivku trajektorie",
-        "browser_animation_note": "Pro plynulé přehrávání použij Plotly tlačítko Play přímo v grafu. Aplikace už nespouští celý Streamlit znovu pro každý snímek; prohlížeč animuje pouze body těles a křivky trajektorií zůstávají statické.",
+        "browser_animation_note": "Použij tlačítka Play / Pauza / Reset nad Plotly grafem. Přehrávání běží v prohlížeči; Streamlit se nespouští znovu pro každý animační snímek.",
         "start": "▶ Start",
         "pause": "⏸ Pauza",
         "reset_time": "↺ Reset času",
@@ -749,19 +738,24 @@ def make_figure(
                     type="buttons",
                     showactive=False,
                     x=0.02,
-                    y=1.08,
+                    y=1.12,
                     xanchor="left",
                     yanchor="top",
                     buttons=[
                         dict(
-                            label="Play",
+                            label="▶ Play",
                             method="animate",
                             args=[None, {"frame": {"duration": duration, "redraw": True}, "transition": {"duration": 0}, "fromcurrent": True}],
                         ),
                         dict(
-                            label="Pause",
+                            label="⏸ Pause",
                             method="animate",
                             args=[[None], {"frame": {"duration": 0, "redraw": False}, "mode": "immediate", "transition": {"duration": 0}}],
+                        ),
+                        dict(
+                            label="↺ Reset",
+                            method="animate",
+                            args=[[str(selected[0])], {"frame": {"duration": 0, "redraw": True}, "mode": "immediate", "transition": {"duration": 0}}],
                         ),
                     ],
                 )
@@ -793,14 +787,26 @@ def make_figure(
 st.set_page_config(page_title="N-body Newton vs 1PN", layout="wide")
 initialize_session_defaults()
 
-# Reset button is intentionally placed before all other widgets; Streamlit allows
-# changing widget session_state only before those widgets are instantiated.
-if st.sidebar.button("Reset to initial values / Obnovit výchozí hodnoty", use_container_width=True):
+# Deferred state-changing actions.  They are handled before any widgets are
+# created, which avoids StreamlitAPIException for already-instantiated widgets.
+if st.session_state.pop("_reset_requested", False):
     reset_to_initial_state()
     st.rerun()
 
+_pending_preset = st.session_state.pop("_load_preset_requested", None)
+if _pending_preset is not None:
+    load_preset_to_state(str(_pending_preset), reset_playback=True)
+    st.rerun()
+
+# Language is the only control outside the form so that the interface language
+# can be changed immediately.  It does not trigger recomputation because the
+# trajectory calculation is cached and depends only on the physical parameters.
 language = st.sidebar.selectbox(t("language"), ("English", "Čeština"), key="language")
 st.title(t("title"))
+
+if st.sidebar.button(t("reset_initial"), use_container_width=True):
+    st.session_state["_reset_requested"] = True
+    st.rerun()
 
 with st.expander(t("what"), expanded=False):
     if language == "Čeština":
@@ -870,8 +876,8 @@ The 1PN multiplier is only an educational magnifier for the relativistic terms.
         st.latex(r"\ddot{\mathbf r}_i=-\sum_{j\ne i}Gm_j\frac{\mathbf r_i-\mathbf r_j}{\left(|\mathbf r_i-\mathbf r_j|^2+\epsilon^2\right)^{3/2}}")
         st.markdown(
             r"""
-The softening length $\epsilon$ is a numerical regularization of close passages.
-It is not a relativistic effect; it only prevents infinite accelerations when
+The softening $\epsilon$ is a numerical regularization of close encounters.  It
+is not a relativistic effect; it only prevents an infinite force when
 $r_{ij}\to0$.
             """
         )
@@ -885,21 +891,21 @@ harmonic-coordinate form,
         st.latex(r"\mathbf a_{ij}^{\rm rel,1PN}=\frac{GM}{c^2r^2}\left[\mathbf n\left((4+2\eta)\frac{GM}{r}-(1+3\eta)v^2+\frac32\eta\dot r^2\right)+(4-2\eta)\dot r\,\mathbf v\right]")
         st.markdown(
             r"""
-where $M=m_i+m_j$, $\eta=m_im_j/M^2$,
-$\mathbf n=(\mathbf r_i-\mathbf r_j)/r$, $\mathbf v=\mathbf v_i-\mathbf v_j$,
-and $\dot r=\mathbf n\cdot\mathbf v$.  This app **does not include the full
-Einstein--Infeld--Hoffmann many-body 1PN terms**, so the right panel is not a
-precision relativistic ephemeris.  It is a didactic pairwise approximation.  The
-ODEs are integrated with the classical fourth-order Runge--Kutta method,
+where $M=m_i+m_j$, $\eta=m_im_j/M^2$, $\mathbf n=(\mathbf r_i-\mathbf r_j)/r$,
+$\mathbf v=\mathbf v_i-\mathbf v_j$, and $\dot r=\mathbf n\cdot\mathbf v$.
+The app **does not include the full Einstein--Infeld--Hoffmann many-body 1PN
+terms**, so the right panel is not a precision relativistic ephemeris.  It is a
+visual pairwise approximation.  Time integration uses the classical fourth-order
+Runge--Kutta method:
             """
         )
         st.latex(r"\mathbf y_{n+1}=\mathbf y_n+\frac{\Delta t}{6}(\mathbf k_1+2\mathbf k_2+2\mathbf k_3+\mathbf k_4)")
         st.markdown(
             r"""
-The diagnostics $\max(v/c)$ and $\max(Gm/(rc^2))$ indicate whether the weak-field
-and slow-motion 1PN approximation is still reasonable.  If they become large,
-the simulation can remain visually interesting but should not be interpreted as
-a quantitatively valid relativistic model.
+The diagnostics $\max(v/c)$ and $\max(Gm/(rc^2))$ indicate whether the weak-field,
+slow-motion 1PN approximation is still reasonable.  If they become large, the
+simulation can remain visually interesting but should not be interpreted as a
+quantitatively valid relativistic model.
             """
         )
 
@@ -929,125 +935,130 @@ a quantitatively valid relativistic model.
             """
         )
 
-st.sidebar.header(t("global_controls"))
-preset_name = st.sidebar.selectbox(t("preset"), tuple(PRESETS.keys()), key="preset")
-if st.sidebar.button(t("load_preset"), use_container_width=True):
-    load_preset_to_state(preset_name, reset_playback=True)
+# All expensive physical controls are inside a form.  Moving sliders no longer
+# reruns the whole app; values are submitted together by Apply and recompute.
+with st.sidebar.form("nbody_controls_form"):
+    st.header(t("global_controls"))
+    preset_name = st.selectbox(t("preset"), tuple(PRESETS.keys()), key="preset")
+    load_preset_clicked = st.form_submit_button(t("load_preset"), use_container_width=True)
+    note = PRESETS[preset_name].note_cs if language == "Čeština" else PRESETS[preset_name].note_en
+    st.caption(f"**{t('preset_note')}:** {note}")
+
+    st.slider(t("n_bodies"), 2, MAX_BODIES, key="n_bodies")
+    st.slider(t("g_value"), 0.05, 5.0, step=0.05, key="g_value")
+    st.slider(t("softening"), 0.0, 0.10, step=0.001, key="softening")
+
+    st.header(t("time_controls"))
+    st.slider(t("total_time"), 0.5, 80.0, step=0.5, key="total_time")
+    st.slider(t("dt"), 0.001, 0.10, step=0.001, key="dt")
+    st.slider(t("frame_stride"), 1, 50, step=1, key="frame_stride")
+
+    st.header(t("relativity"))
+    st.slider(t("log10_c"), 0.5, 5.0, step=0.05, key="log10_c")
+    st.caption(f"c = {10.0 ** float(st.session_state['log10_c']):.4g} L0/T0")
+    st.slider(t("pn_log10"), -4.0, 6.0, step=0.1, key="pn_log10")
+    st.caption(f"1PN multiplier = {10.0 ** float(st.session_state['pn_log10']):.4g}")
+
+    st.header(t("display"))
+    st.slider(t("axis_half_range"), 0.2, 10.0, step=0.1, key="axis_half_range")
+    st.slider(t("marker_base"), 2.0, 18.0, step=0.5, key="marker_base")
+    st.slider(t("marker_mass_gamma"), 0.05, 1.0, step=0.05, key="marker_mass_gamma")
+
+    st.header(t("playback"))
+    st.slider(t("max_animation_frames"), 20, 300, step=10, key="max_animation_frames")
+    st.slider(t("animation_frame_duration"), 10, 200, step=10, key="animation_frame_duration")
+    st.slider(t("orbit_curve_points"), 100, 2500, step=100, key="orbit_curve_points")
+
+    n_for_widgets = int(st.session_state.get("n_bodies", DEFAULTS["n_bodies"]))
+    with st.expander(t("body_parameters"), expanded=False):
+        for i in range(n_for_widgets):
+            st.markdown(f"**{t('body_i')} {i + 1}**")
+            st.slider(t("mass"), 0.0, 10.0, step=0.01, key=f"m_{i}")
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.number_input(t("x"), min_value=-10.0, max_value=10.0, step=0.01, format="%.6f", key=f"x_{i}")
+            with c2:
+                st.number_input(t("y"), min_value=-10.0, max_value=10.0, step=0.01, format="%.6f", key=f"y_{i}")
+            with c3:
+                st.number_input(t("z"), min_value=-10.0, max_value=10.0, step=0.01, format="%.6f", key=f"z_{i}")
+            v1, v2, v3 = st.columns(3)
+            with v1:
+                st.number_input(t("vx"), min_value=-10.0, max_value=10.0, step=0.01, format="%.6f", key=f"vx_{i}")
+            with v2:
+                st.number_input(t("vy"), min_value=-10.0, max_value=10.0, step=0.01, format="%.6f", key=f"vy_{i}")
+            with v3:
+                st.number_input(t("vz"), min_value=-10.0, max_value=10.0, step=0.01, format="%.6f", key=f"vz_{i}")
+
+    apply_clicked = st.form_submit_button("Apply and recompute" if language == "English" else "Použít a přepočítat", use_container_width=True)
+
+if load_preset_clicked:
+    st.session_state["_load_preset_requested"] = preset_name
     st.rerun()
-
-note = PRESETS[preset_name].note_cs if language == "Čeština" else PRESETS[preset_name].note_en
-st.sidebar.caption(f"**{t('preset_note')}:** {note}")
-
-n_bodies = st.sidebar.slider(t("n_bodies"), 2, MAX_BODIES, key="n_bodies")
-g_value = st.sidebar.slider(t("g_value"), 0.05, 5.0, step=0.05, key="g_value")
-softening = st.sidebar.slider(t("softening"), 0.0, 0.10, step=0.001, key="softening")
-
-st.sidebar.header(t("time_controls"))
-total_time = st.sidebar.slider(t("total_time"), 0.5, 80.0, step=0.5, key="total_time")
-dt = st.sidebar.slider(t("dt"), 0.001, 0.10, step=0.001, key="dt")
-frame_stride = st.sidebar.slider(t("frame_stride"), 1, 50, step=1, key="frame_stride")
-trail_frames = st.sidebar.slider(t("trail_frames"), 10, 1200, step=10, key="trail_frames")
-
-st.sidebar.header(t("relativity"))
-log10_c = st.sidebar.slider(t("log10_c"), 0.5, 5.0, step=0.05, key="log10_c")
-c_value = 10.0 ** float(log10_c)
-st.sidebar.caption(f"c = {c_value:.4g} L0/T0")
-pn_log10 = st.sidebar.slider(t("pn_log10"), -4.0, 6.0, step=0.1, key="pn_log10")
-st.sidebar.caption(f"1PN multiplier = {10.0 ** float(pn_log10):.4g}")
-
-st.sidebar.header(t("display"))
-axis_half_range = st.sidebar.slider(t("axis_half_range"), 0.2, 10.0, step=0.1, key="axis_half_range")
-marker_base = st.sidebar.slider(t("marker_base"), 2.0, 18.0, step=0.5, key="marker_base")
-marker_mass_gamma = st.sidebar.slider(t("marker_mass_gamma"), 0.05, 1.0, step=0.05, key="marker_mass_gamma")
-
-st.sidebar.header(t("playback"))
-use_plotly_animation = st.sidebar.checkbox(t("plotly_animation"), key="use_plotly_animation")
-max_animation_frames = st.sidebar.slider(t("max_animation_frames"), 20, 400, step=10, key="max_animation_frames")
-animation_frame_duration = st.sidebar.slider(t("animation_frame_duration"), 10, 200, step=10, key="animation_frame_duration")
-orbit_curve_points = st.sidebar.slider(t("orbit_curve_points"), 100, 3000, step=100, key="orbit_curve_points")
-
-with st.sidebar.expander(t("body_parameters"), expanded=False):
-    for i in range(n_bodies):
-        st.markdown(f"**{t('body_i')} {i + 1}**")
-        st.slider(t("mass"), 0.0, 10.0, step=0.01, key=f"m_{i}")
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.number_input(t("x"), min_value=-10.0, max_value=10.0, step=0.01, format="%.6f", key=f"x_{i}")
-        with c2:
-            st.number_input(t("y"), min_value=-10.0, max_value=10.0, step=0.01, format="%.6f", key=f"y_{i}")
-        with c3:
-            st.number_input(t("z"), min_value=-10.0, max_value=10.0, step=0.01, format="%.6f", key=f"z_{i}")
-        v1, v2, v3 = st.columns(3)
-        with v1:
-            st.number_input(t("vx"), min_value=-10.0, max_value=10.0, step=0.01, format="%.6f", key=f"vx_{i}")
-        with v2:
-            st.number_input(t("vy"), min_value=-10.0, max_value=10.0, step=0.01, format="%.6f", key=f"vy_{i}")
-        with v3:
-            st.number_input(t("vz"), min_value=-10.0, max_value=10.0, step=0.01, format="%.6f", key=f"vz_{i}")
+if apply_clicked:
+    st.session_state["manual_frame"] = 0
 
 st.info(t("units_caption"))
+st.info(t("browser_animation_note"))
+
+# Use the submitted/applied session-state values.
+n_bodies = int(st.session_state["n_bodies"])
+g_value = float(st.session_state["g_value"])
+softening = float(st.session_state["softening"])
+total_time = float(st.session_state["total_time"])
+dt = float(st.session_state["dt"])
+frame_stride = int(st.session_state["frame_stride"])
+log10_c = float(st.session_state["log10_c"])
+c_value = 10.0 ** log10_c
+pn_log10 = float(st.session_state["pn_log10"])
+axis_half_range = float(st.session_state["axis_half_range"])
+marker_base = float(st.session_state["marker_base"])
+marker_mass_gamma = float(st.session_state["marker_mass_gamma"])
+max_animation_frames = int(st.session_state["max_animation_frames"])
+animation_frame_duration = int(st.session_state["animation_frame_duration"])
+orbit_curve_points = int(st.session_state["orbit_curve_points"])
 
 pos0, vel0, masses0 = collect_initial_conditions(n_bodies)
-# Cache inputs must be immutable.
 pos_tuple = tuple(tuple(float(v) for v in row) for row in pos0)
 vel_tuple = tuple(tuple(float(v) for v in row) for row in vel0)
 masses_tuple = tuple(float(v) for v in masses0)
 
-n_step_estimate = int(math.ceil(float(total_time) / float(dt)))
-frame_estimate = int(math.ceil(n_step_estimate / max(int(frame_stride), 1))) + 1
+n_step_estimate = int(math.ceil(total_time / dt))
+frame_estimate = int(math.ceil(n_step_estimate / max(frame_stride, 1))) + 1
 st.sidebar.caption(f"RK4 steps: {n_step_estimate:,}; displayed frames: about {frame_estimate:,}")
-if n_step_estimate > 80_000:
+if n_step_estimate > 60_000:
     st.error(t("warning_steps"))
     st.stop()
 
 with st.spinner("Integrating trajectories..." if language == "English" else "Integruji trajektorie..."):
     times, frames_n, frames_p, masses, diag_n, diag_p, e0, energy_drift = simulate_cached(
-        n_bodies=int(n_bodies),
+        n_bodies=n_bodies,
         masses_tuple=masses_tuple,
         pos_tuple=pos_tuple,
         vel_tuple=vel_tuple,
-        g_value=float(g_value),
-        softening=float(softening),
-        total_time=float(total_time),
-        dt=float(dt),
-        frame_stride=int(frame_stride),
-        c_value=float(c_value),
-        pn_log10=float(pn_log10),
+        g_value=g_value,
+        softening=softening,
+        total_time=total_time,
+        dt=dt,
+        frame_stride=frame_stride,
+        c_value=c_value,
+        pn_log10=pn_log10,
     )
 
-# Reset playback when physical/display parameters change.
-param_signature = repr((
-    language, n_bodies, masses_tuple, pos_tuple, vel_tuple, g_value, softening,
-    total_time, dt, frame_stride, trail_frames, log10_c, pn_log10, axis_half_range,
-    marker_base, marker_mass_gamma, use_plotly_animation, max_animation_frames,
-))
-if st.session_state.get("last_parameter_signature") != param_signature:
-    st.session_state["last_parameter_signature"] = param_signature
-    st.session_state["live_frame"] = 0
-    st.session_state["running"] = False
-
 st.subheader(t("playback"))
-st.info(t("browser_animation_note"))
-# Manual time selection.  This does not recompute the trajectory because the
-# simulation itself is cached; it only changes the displayed marker positions.
-st.session_state.setdefault("manual_frame", 0)
-if int(st.session_state.get("manual_frame", 0)) > len(times) - 1:
-    st.session_state["manual_frame"] = len(times) - 1
-current_frame = st.slider(t("frame_slider"), 0, len(times) - 1, int(st.session_state.get("manual_frame", 0)), key="manual_frame")
 fig = make_figure(
     times=times,
     frames_n=frames_n,
     frames_p=frames_p,
     masses=masses,
-    frame_index=current_frame,
-    trail_frames=int(trail_frames),
-    axis_half_range=float(axis_half_range),
-    base_marker=float(marker_base),
-    mass_gamma=float(marker_mass_gamma),
-    animate=bool(use_plotly_animation),
-    max_animation_frames=int(max_animation_frames),
-    orbit_curve_points=int(orbit_curve_points),
-    animation_frame_duration=int(animation_frame_duration),
+    frame_index=0,
+    trail_frames=0,
+    axis_half_range=axis_half_range,
+    base_marker=marker_base,
+    mass_gamma=marker_mass_gamma,
+    animate=True,
+    max_animation_frames=max_animation_frames,
+    orbit_curve_points=orbit_curve_points,
+    animation_frame_duration=animation_frame_duration,
 )
 st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True})
 st.caption(t("fixed_axes_note"))
@@ -1055,11 +1066,11 @@ st.caption(t("caption"))
 
 c1, c2, c3, c4 = st.columns(4)
 with c1:
-    st.metric(t("displayed_time"), f"{times[current_frame]:.3f} T0")
+    st.metric(t("displayed_time"), f"0.000 T0")
 with c2:
     st.metric("N", f"{n_bodies}")
 with c3:
-    st.metric("1PN multiplier", f"{10.0 ** float(pn_log10):.3g}×")
+    st.metric("1PN multiplier", f"{10.0 ** pn_log10:.3g}×")
 with c4:
     st.metric("Newton energy drift", f"{energy_drift:.3e}")
 
