@@ -57,8 +57,10 @@ DEFAULTS = {
     "live_interval_ms": 120,
     "frames_per_refresh": 3,
     "loop_playback": True,
-    "use_plotly_animation": False,
-    "max_animation_frames": 250,
+    "use_plotly_animation": True,
+    "max_animation_frames": 140,
+    "animation_frame_duration": 40,
+    "orbit_curve_points": 1200,
 }
 
 # Default body values are overwritten by the default preset during initialization.
@@ -227,6 +229,9 @@ TR = {
         "loop_playback": "Loop live playback",
         "plotly_animation": "Also create Plotly Play button",
         "max_animation_frames": "Max Plotly animation frames",
+        "animation_frame_duration": "Animation frame duration [ms]",
+        "orbit_curve_points": "Max points per trajectory curve",
+        "browser_animation_note": "For smooth playback, use the Plotly Play button inside the graph. The app no longer reruns Streamlit every animation frame; the browser animates only the body markers while trajectory curves stay static.",
         "start": "▶ Start",
         "pause": "⏸ Pause",
         "reset_time": "↺ Reset time",
@@ -284,6 +289,9 @@ TR = {
         "loop_playback": "Přehrávat ve smyčce",
         "plotly_animation": "Vytvořit také Plotly Play tlačítko",
         "max_animation_frames": "Maximální počet Plotly animačních snímků",
+        "animation_frame_duration": "Délka animačního snímku [ms]",
+        "orbit_curve_points": "Maximální počet bodů na křivku trajektorie",
+        "browser_animation_note": "Pro plynulé přehrávání použij Plotly tlačítko Play přímo v grafu. Aplikace už nespouští celý Streamlit znovu pro každý snímek; prohlížeč animuje pouze body těles a křivky trajektorií zůstávají statické.",
         "start": "▶ Start",
         "pause": "⏸ Pauza",
         "reset_time": "↺ Reset času",
@@ -626,7 +634,19 @@ def make_figure(
     mass_gamma: float,
     animate: bool,
     max_animation_frames: int,
+    orbit_curve_points: int,
+    animation_frame_duration: int,
 ) -> go.Figure:
+    """Build a fast Plotly 3D figure.
+
+    Important performance choice:
+    - trajectory curves are static, downsampled lines;
+    - browser animation updates only the two marker traces, not all trail lines;
+    - no Streamlit autorefresh is used for playback.
+
+    This keeps the generated HTML/JSON much smaller than dynamic trails in every
+    frame and makes the Play button usable on Streamlit Community Cloud.
+    """
     n = len(masses)
     labels = body_labels(n)
     colors = BODY_COLORS[:n]
@@ -641,27 +661,36 @@ def make_figure(
         horizontal_spacing=0.02,
     )
 
-    def add_model(frames: np.ndarray, col: int, prefix: str) -> None:
-        sl = trail_slice(frame_index, trail_frames)
+    # Downsample only the static trajectory curves.  The integrator still uses
+    # the full RK4 resolution; this affects plotting only.
+    n_total = len(times)
+    max_curve_points = max(int(orbit_curve_points), 10)
+    if n_total <= max_curve_points:
+        path_idx = np.arange(n_total, dtype=int)
+    else:
+        path_idx = np.unique(np.linspace(0, n_total - 1, max_curve_points).astype(int))
+
+    def add_model_static_paths_and_markers(frames: np.ndarray, col: int, prefix: str) -> int:
         for i in range(n):
-            xyz = frames[sl, i, :]
+            xyz = frames[path_idx, i, :]
             fig.add_trace(
                 go.Scatter3d(
                     x=xyz[:, 0], y=xyz[:, 1], z=xyz[:, 2],
                     mode="lines",
                     line=dict(width=2, color=colors[i]),
-                    name=f"{prefix} {labels[i]} trail",
+                    name=f"{prefix} {labels[i]} trajectory",
                     showlegend=False,
                     hoverinfo="skip",
                 ),
                 row=1, col=col,
             )
         pts = frames[frame_index, :, :]
+        marker_trace_index = len(fig.data)
         fig.add_trace(
             go.Scatter3d(
                 x=pts[:, 0], y=pts[:, 1], z=pts[:, 2],
                 mode="markers+text",
-                marker=dict(size=sizes, color=colors, opacity=0.95, sizemode="diameter"),
+                marker=dict(size=sizes, color=colors, opacity=0.96, sizemode="diameter"),
                 text=labels,
                 textposition="top center",
                 name=f"{prefix} bodies",
@@ -670,9 +699,10 @@ def make_figure(
             ),
             row=1, col=col,
         )
+        return marker_trace_index
 
-    add_model(frames_n, 1, "Newton")
-    add_model(frames_p, 2, "1PN")
+    newton_marker_trace = add_model_static_paths_and_markers(frames_n, 1, "Newton")
+    pn_marker_trace = add_model_static_paths_and_markers(frames_p, 2, "1PN")
 
     lim = max(float(axis_half_range), 0.1)
     axis_template = dict(
@@ -692,40 +722,62 @@ def make_figure(
     )
 
     if animate:
-        n_total = len(times)
         if n_total <= max_animation_frames:
             selected = list(range(n_total))
         else:
-            selected = sorted(set(np.linspace(0, n_total - 1, max_animation_frames).astype(int).tolist()))
-        trace_count_per_model = n + 1
-        total_traces = 2 * trace_count_per_model
+            selected = sorted(set(np.linspace(0, n_total - 1, int(max_animation_frames)).astype(int).tolist()))
+
         frames_out = []
         for fidx in selected:
-            frame_data = []
-            for frames in (frames_n, frames_p):
-                sl = trail_slice(fidx, trail_frames)
-                for i in range(n):
-                    xyz = frames[sl, i, :]
-                    frame_data.append(go.Scatter3d(x=xyz[:, 0], y=xyz[:, 1], z=xyz[:, 2]))
-                pts = frames[fidx, :, :]
-                frame_data.append(go.Scatter3d(x=pts[:, 0], y=pts[:, 1], z=pts[:, 2], text=labels))
-            frames_out.append(go.Frame(data=frame_data, traces=list(range(total_traces)), name=str(fidx)))
+            pts_n = frames_n[fidx, :, :]
+            pts_p = frames_p[fidx, :, :]
+            frames_out.append(
+                go.Frame(
+                    data=[
+                        go.Scatter3d(x=pts_n[:, 0], y=pts_n[:, 1], z=pts_n[:, 2], text=labels),
+                        go.Scatter3d(x=pts_p[:, 0], y=pts_p[:, 1], z=pts_p[:, 2], text=labels),
+                    ],
+                    traces=[newton_marker_trace, pn_marker_trace],
+                    name=str(fidx),
+                )
+            )
         fig.frames = frames_out
+        duration = max(int(animation_frame_duration), 1)
         fig.update_layout(
             updatemenus=[
                 dict(
-                    type="buttons", showactive=False, x=0.02, y=1.08, xanchor="left", yanchor="top",
+                    type="buttons",
+                    showactive=False,
+                    x=0.02,
+                    y=1.08,
+                    xanchor="left",
+                    yanchor="top",
                     buttons=[
-                        dict(label="Play", method="animate", args=[None, {"frame": {"duration": 60, "redraw": True}, "fromcurrent": True}]),
-                        dict(label="Pause", method="animate", args=[[None], {"frame": {"duration": 0, "redraw": False}, "mode": "immediate"}]),
+                        dict(
+                            label="Play",
+                            method="animate",
+                            args=[None, {"frame": {"duration": duration, "redraw": True}, "transition": {"duration": 0}, "fromcurrent": True}],
+                        ),
+                        dict(
+                            label="Pause",
+                            method="animate",
+                            args=[[None], {"frame": {"duration": 0, "redraw": False}, "mode": "immediate", "transition": {"duration": 0}}],
+                        ),
                     ],
                 )
             ],
             sliders=[
                 dict(
-                    active=0, x=0.1, y=0.01, len=0.8,
+                    active=0,
+                    x=0.1,
+                    y=0.01,
+                    len=0.8,
                     steps=[
-                        dict(method="animate", label=f"{times[fidx]:.2f}", args=[[str(fidx)], {"frame": {"duration": 0, "redraw": True}, "mode": "immediate"}])
+                        dict(
+                            method="animate",
+                            label=f"{times[fidx]:.2f}",
+                            args=[[str(fidx)], {"frame": {"duration": 0, "redraw": True}, "mode": "immediate", "transition": {"duration": 0}}],
+                        )
                         for fidx in selected
                     ],
                 )
@@ -909,11 +961,10 @@ marker_base = st.sidebar.slider(t("marker_base"), 2.0, 18.0, step=0.5, key="mark
 marker_mass_gamma = st.sidebar.slider(t("marker_mass_gamma"), 0.05, 1.0, step=0.05, key="marker_mass_gamma")
 
 st.sidebar.header(t("playback"))
-live_interval_ms = st.sidebar.slider(t("live_interval_ms"), 50, 2000, step=50, key="live_interval_ms")
-frames_per_refresh = st.sidebar.slider(t("frames_per_refresh"), 1, 40, step=1, key="frames_per_refresh")
-loop_playback = st.sidebar.checkbox(t("loop_playback"), key="loop_playback")
 use_plotly_animation = st.sidebar.checkbox(t("plotly_animation"), key="use_plotly_animation")
-max_animation_frames = st.sidebar.slider(t("max_animation_frames"), 20, 600, step=10, key="max_animation_frames")
+max_animation_frames = st.sidebar.slider(t("max_animation_frames"), 20, 400, step=10, key="max_animation_frames")
+animation_frame_duration = st.sidebar.slider(t("animation_frame_duration"), 10, 200, step=10, key="animation_frame_duration")
+orbit_curve_points = st.sidebar.slider(t("orbit_curve_points"), 100, 3000, step=100, key="orbit_curve_points")
 
 with st.sidebar.expander(t("body_parameters"), expanded=False):
     for i in range(n_bodies):
@@ -976,42 +1027,13 @@ if st.session_state.get("last_parameter_signature") != param_signature:
     st.session_state["running"] = False
 
 st.subheader(t("playback"))
-st.session_state.setdefault("live_frame", 0)
-st.session_state.setdefault("running", False)
-st.session_state["live_frame"] = int(np.clip(st.session_state["live_frame"], 0, len(times) - 1))
-
-pb1, pb2, pb3, pb4 = st.columns([1, 1, 1, 4])
-with pb1:
-    if st.button(t("start"), use_container_width=True):
-        st.session_state["running"] = True
-with pb2:
-    if st.button(t("pause"), use_container_width=True):
-        st.session_state["running"] = False
-with pb3:
-    if st.button(t("reset_time"), use_container_width=True):
-        st.session_state["live_frame"] = 0
-        st.session_state["running"] = False
-with pb4:
-    status = t("status_running") if st.session_state["running"] else t("status_paused")
-    st.write(f"Status: {status}; frame {st.session_state['live_frame'] + 1}/{len(times)}; t = {times[st.session_state['live_frame']]:.3f} T0")
-
-if st.session_state["running"]:
-    if HAS_AUTOREFRESH:
-        st_autorefresh(interval=int(live_interval_ms), key="nbody_live_autorefresh")
-        next_frame = int(st.session_state["live_frame"]) + int(frames_per_refresh)
-        if next_frame >= len(times):
-            if loop_playback:
-                next_frame = next_frame % len(times)
-            else:
-                next_frame = len(times) - 1
-                st.session_state["running"] = False
-        st.session_state["live_frame"] = int(next_frame)
-    else:
-        st.warning(t("no_autorefresh"))
-else:
-    st.session_state["live_frame"] = st.slider(t("frame_slider"), 0, len(times) - 1, int(st.session_state["live_frame"]))
-
-current_frame = int(st.session_state["live_frame"])
+st.info(t("browser_animation_note"))
+# Manual time selection.  This does not recompute the trajectory because the
+# simulation itself is cached; it only changes the displayed marker positions.
+st.session_state.setdefault("manual_frame", 0)
+if int(st.session_state.get("manual_frame", 0)) > len(times) - 1:
+    st.session_state["manual_frame"] = len(times) - 1
+current_frame = st.slider(t("frame_slider"), 0, len(times) - 1, int(st.session_state.get("manual_frame", 0)), key="manual_frame")
 fig = make_figure(
     times=times,
     frames_n=frames_n,
@@ -1024,6 +1046,8 @@ fig = make_figure(
     mass_gamma=float(marker_mass_gamma),
     animate=bool(use_plotly_animation),
     max_animation_frames=int(max_animation_frames),
+    orbit_curve_points=int(orbit_curve_points),
+    animation_frame_duration=int(animation_frame_duration),
 )
 st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True})
 st.caption(t("fixed_axes_note"))
