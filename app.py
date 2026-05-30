@@ -15,6 +15,8 @@ Run locally:
 from __future__ import annotations
 
 import math
+import os
+import tempfile
 from dataclasses import dataclass
 from typing import Iterable, Sequence
 
@@ -51,6 +53,7 @@ DEFAULTS = {
     "max_animation_frames": 120,
     "animation_frame_duration": 35,
     "orbit_curve_points": 900,
+    "export_gif_frames": 80,
 }
 
 # Default body values are overwritten by the default preset during initialization.
@@ -225,6 +228,15 @@ TR = {
         "max_animation_frames": "Max Plotly animation frames",
         "animation_frame_duration": "Animation frame duration [ms]",
         "orbit_curve_points": "Max points per trajectory curve",
+        "export": "Export and downloads",
+        "export_gif_frames": "Animated GIF frames",
+        "generate_gif": "Generate downloadable GIF video",
+        "download_gif": "Download GIF video",
+        "gif_generating": "Rendering animated GIF. This can take a while on Streamlit Cloud...",
+        "gif_ready": "Animated GIF is ready for download.",
+        "gif_note": "The GIF is rendered only after pressing the button. It uses a reduced number of frames so that export remains practical on the web server.",
+        "download_protocol": "Download simulation protocol TXT",
+        "protocol_note": "The protocol stores the current numerical parameters, initial masses, initial positions and velocities, and the final Newton/1PN positions at the simulated final time.",
         "browser_animation_note": "Use the Play / Pause / Reset buttons above the Plotly graph. Playback runs in the browser; Streamlit does not rerun for every animation frame.",
         "start": "▶ Start",
         "pause": "⏸ Pause",
@@ -289,6 +301,15 @@ TR = {
         "max_animation_frames": "Maximální počet Plotly animačních snímků",
         "animation_frame_duration": "Délka animačního snímku [ms]",
         "orbit_curve_points": "Maximální počet bodů na křivku trajektorie",
+        "export": "Export a stažení",
+        "export_gif_frames": "Počet snímků animovaného GIFu",
+        "generate_gif": "Vygenerovat stažitelné GIF video",
+        "download_gif": "Stáhnout GIF video",
+        "gif_generating": "Renderuji animovaný GIF. Na Streamlit Cloud to může chvíli trvat...",
+        "gif_ready": "Animovaný GIF je připraven ke stažení.",
+        "gif_note": "GIF se renderuje až po stisku tlačítka. Používá omezený počet snímků, aby byl export na webovém serveru prakticky použitelný.",
+        "download_protocol": "Stáhnout protokol simulace TXT",
+        "protocol_note": "Protokol ukládá aktuální numerické parametry, počáteční hmotnosti, počáteční polohy a rychlosti a finální Newton/1PN polohy v konečném čase simulace.",
         "browser_animation_note": "Použij tlačítka Play / Pauza / Reset nad Plotly grafem. Přehrávání běží v prohlížeči; Streamlit se nespouští znovu pro každý animační snímek.",
         "start": "▶ Start",
         "pause": "⏸ Pauza",
@@ -837,6 +858,263 @@ def make_figure(
 
 
 # =============================================================================
+# Export helpers
+# =============================================================================
+
+def selected_frame_indices(n_total: int, max_frames: int) -> np.ndarray:
+    """Return evenly spaced frame indices for browser/GIF export."""
+    n_total = max(int(n_total), 1)
+    max_frames = max(int(max_frames), 1)
+    if n_total <= max_frames:
+        return np.arange(n_total, dtype=int)
+    return np.unique(np.linspace(0, n_total - 1, max_frames).astype(int))
+
+
+def build_protocol_text(
+    language: str,
+    preset_name: str,
+    n_bodies: int,
+    masses: np.ndarray,
+    initial_pos: np.ndarray,
+    initial_vel: np.ndarray,
+    times: np.ndarray,
+    frames_n: np.ndarray,
+    frames_p: np.ndarray,
+    g_value: float,
+    softening: float,
+    dt: float,
+    frame_stride: int,
+    c_value: float,
+    pn_log10: float,
+    axis_scaling_mode: str,
+    axis_half_range: float,
+    diag_n: dict[str, float],
+    diag_p: dict[str, float],
+    energy_drift: float,
+) -> str:
+    """Create a plain-text report/protocol for the current simulation."""
+    labels = body_labels(n_bodies)
+    final_time = float(times[-1]) if len(times) else 0.0
+    pn_multiplier = 10.0 ** float(pn_log10)
+
+    if language == "Čeština":
+        lines = [
+            "Protokol simulace N teles",
+            "============================",
+            "",
+            f"Preset: {preset_name}",
+            f"Pocet teles N: {n_bodies}",
+            f"Konecny cas simulace: {final_time:.10g} T0",
+            "",
+            "Numericke a fyzikalni parametry:",
+            f"  G = {g_value:.10g}",
+            f"  softening epsilon = {softening:.10g} L0",
+            f"  RK4 krok dt = {dt:.10g} T0",
+            f"  RK4 kroku na ulozeny frame = {frame_stride}",
+            f"  c = {c_value:.10g} L0/T0",
+            f"  1PN multiplier = {pn_multiplier:.10g}",
+            f"  rezim boxu = {axis_scaling_mode}",
+            f"  fixni polovina boxu = {axis_half_range:.10g} L0",
+            "",
+            "Poznamka: pocatecni polohy a rychlosti nize jsou hodnoty pouzite integratorem po posunu do barycentricke soustavy.",
+            "",
+            "Pocatecni stav:",
+        ]
+        for i in range(n_bodies):
+            lines.append(
+                f"  {labels[i]}: m={masses[i]:.12g} M0; "
+                f"r0=({initial_pos[i,0]:.12g}, {initial_pos[i,1]:.12g}, {initial_pos[i,2]:.12g}) L0; "
+                f"v0=({initial_vel[i,0]:.12g}, {initial_vel[i,1]:.12g}, {initial_vel[i,2]:.12g}) L0/T0"
+            )
+        lines += ["", f"Finalni polohy v case t={final_time:.10g} T0:", "  Newton gravity:"]
+        for i in range(n_bodies):
+            r = frames_n[-1, i, :]
+            lines.append(f"    {labels[i]}: r=({r[0]:.12g}, {r[1]:.12g}, {r[2]:.12g}) L0")
+        lines.append("  Einstein GTR 1PN approximation:")
+        for i in range(n_bodies):
+            r = frames_p[-1, i, :]
+            lines.append(f"    {labels[i]}: r=({r[0]:.12g}, {r[1]:.12g}, {r[2]:.12g}) L0")
+        lines += [
+            "",
+            "Diagnostika:",
+            f"  Newton max v/c = {diag_n['max_v_over_c']:.12e}",
+            f"  Newton max Gm/(rc^2) = {diag_n['max_GM_over_rc2']:.12e}",
+            f"  1PN max v/c = {diag_p['max_v_over_c']:.12e}",
+            f"  1PN max Gm/(rc^2) = {diag_p['max_GM_over_rc2']:.12e}",
+            f"  minimalni separace = {min(diag_n['min_separation'], diag_p['min_separation']):.12e} L0",
+            f"  relativni drift Newtonovske energie = {energy_drift:.12e}",
+            "",
+            "Model: Newtonovska N-telesova gravitace vlevo a parova dvoutelesova 1PN korekce vpravo. Nejde o plnou EIH vice-telesovou efemeridu.",
+        ]
+    else:
+        lines = [
+            "N-body simulation protocol",
+            "==========================",
+            "",
+            f"Preset: {preset_name}",
+            f"Number of bodies N: {n_bodies}",
+            f"Final simulated time: {final_time:.10g} T0",
+            "",
+            "Numerical and physical parameters:",
+            f"  G = {g_value:.10g}",
+            f"  softening epsilon = {softening:.10g} L0",
+            f"  RK4 time step dt = {dt:.10g} T0",
+            f"  RK4 steps per stored frame = {frame_stride}",
+            f"  c = {c_value:.10g} L0/T0",
+            f"  1PN multiplier = {pn_multiplier:.10g}",
+            f"  view-box mode = {axis_scaling_mode}",
+            f"  fixed view-box half-width = {axis_half_range:.10g} L0",
+            "",
+            "Note: the initial positions and velocities below are the values used by the integrator after transformation to the barycentric frame.",
+            "",
+            "Initial state:",
+        ]
+        for i in range(n_bodies):
+            lines.append(
+                f"  {labels[i]}: m={masses[i]:.12g} M0; "
+                f"r0=({initial_pos[i,0]:.12g}, {initial_pos[i,1]:.12g}, {initial_pos[i,2]:.12g}) L0; "
+                f"v0=({initial_vel[i,0]:.12g}, {initial_vel[i,1]:.12g}, {initial_vel[i,2]:.12g}) L0/T0"
+            )
+        lines += ["", f"Final positions at t={final_time:.10g} T0:", "  Newton gravity:"]
+        for i in range(n_bodies):
+            r = frames_n[-1, i, :]
+            lines.append(f"    {labels[i]}: r=({r[0]:.12g}, {r[1]:.12g}, {r[2]:.12g}) L0")
+        lines.append("  Einstein GTR 1PN approximation:")
+        for i in range(n_bodies):
+            r = frames_p[-1, i, :]
+            lines.append(f"    {labels[i]}: r=({r[0]:.12g}, {r[1]:.12g}, {r[2]:.12g}) L0")
+        lines += [
+            "",
+            "Diagnostics:",
+            f"  Newton max v/c = {diag_n['max_v_over_c']:.12e}",
+            f"  Newton max Gm/(rc^2) = {diag_n['max_GM_over_rc2']:.12e}",
+            f"  1PN max v/c = {diag_p['max_v_over_c']:.12e}",
+            f"  1PN max Gm/(rc^2) = {diag_p['max_GM_over_rc2']:.12e}",
+            f"  minimum separation = {min(diag_n['min_separation'], diag_p['min_separation']):.12e} L0",
+            f"  relative Newtonian energy drift = {energy_drift:.12e}",
+            "",
+            "Model: Newtonian N-body gravity on the left and a pairwise two-body 1PN correction on the right. This is not a full EIH many-body ephemeris.",
+        ]
+    return "\n".join(lines) + "\n"
+
+
+def render_animation_gif(
+    times: np.ndarray,
+    frames_n: np.ndarray,
+    frames_p: np.ndarray,
+    masses: np.ndarray,
+    axis_half_range: float,
+    axis_scaling_mode: str,
+    base_marker: float,
+    mass_gamma: float,
+    max_gif_frames: int,
+    frame_duration_ms: int,
+    orbit_curve_points: int,
+) -> bytes:
+    """Render the current comparison as a downloadable animated GIF.
+
+    The browser Plotly animation is faster for interaction.  This GIF export is
+    deliberately rendered only on demand because server-side 3D image rendering
+    is relatively expensive on Streamlit Community Cloud.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.animation import FuncAnimation, PillowWriter
+
+    n = len(masses)
+    labels = body_labels(n)
+    colors = BODY_COLORS[:n]
+    sizes = marker_sizes(masses, base_marker, mass_gamma)
+    selected = selected_frame_indices(len(times), max_gif_frames)
+
+    n_total = len(times)
+    max_curve_points = max(int(orbit_curve_points), 10)
+    if n_total <= max_curve_points:
+        path_idx = np.arange(n_total, dtype=int)
+    else:
+        path_idx = np.unique(np.linspace(0, n_total - 1, max_curve_points).astype(int))
+
+    dynamic_axes = str(axis_scaling_mode) == "dynamic"
+    initial_half_range = axis_half_range_for_mode(frames_n, frames_p, str(axis_scaling_mode), axis_half_range, int(selected[0]))
+
+    fig = plt.figure(figsize=(12, 5.7))
+    ax_n = fig.add_subplot(1, 2, 1, projection="3d")
+    ax_p = fig.add_subplot(1, 2, 2, projection="3d")
+    axes = (ax_n, ax_p)
+
+    def set_axes(ax, half_range):
+        lim = max(float(half_range), 0.1)
+        ax.set_xlim(-lim, lim)
+        ax.set_ylim(-lim, lim)
+        ax.set_zlim(-lim, lim)
+        ax.set_xlabel("x [L0]")
+        ax.set_ylabel("y [L0]")
+        ax.set_zlabel("z [L0]")
+        try:
+            ax.set_box_aspect((1, 1, 1))
+        except Exception:
+            pass
+
+    for ax, frames, title in ((ax_n, frames_n, t("newton_title")), (ax_p, frames_p, t("pn_title"))):
+        for i in range(n):
+            xyz = frames[path_idx, i, :]
+            ax.plot(xyz[:, 0], xyz[:, 1], xyz[:, 2], color=colors[i], linewidth=1.2, alpha=0.85)
+        ax.set_title(title)
+        set_axes(ax, initial_half_range)
+
+    pts_n0 = frames_n[int(selected[0]), :, :]
+    pts_p0 = frames_p[int(selected[0]), :, :]
+    scat_n = ax_n.scatter(pts_n0[:, 0], pts_n0[:, 1], pts_n0[:, 2], s=[s * s for s in sizes], c=colors, depthshade=True)
+    scat_p = ax_p.scatter(pts_p0[:, 0], pts_p0[:, 1], pts_p0[:, 2], s=[s * s for s in sizes], c=colors, depthshade=True)
+    text_artists = []
+
+    def update_texts(ax, pts):
+        artists = []
+        for i in range(n):
+            artists.append(ax.text(pts[i, 0], pts[i, 1], pts[i, 2], labels[i], fontsize=7))
+        return artists
+
+    text_artists.extend(update_texts(ax_n, pts_n0))
+    text_artists.extend(update_texts(ax_p, pts_p0))
+
+    def update(k):
+        nonlocal text_artists
+        fidx = int(selected[k])
+        pts_n = frames_n[fidx, :, :]
+        pts_p = frames_p[fidx, :, :]
+        scat_n._offsets3d = (pts_n[:, 0], pts_n[:, 1], pts_n[:, 2])
+        scat_p._offsets3d = (pts_p[:, 0], pts_p[:, 1], pts_p[:, 2])
+        for artist in text_artists:
+            artist.remove()
+        text_artists = []
+        text_artists.extend(update_texts(ax_n, pts_n))
+        text_artists.extend(update_texts(ax_p, pts_p))
+        if dynamic_axes:
+            half_range = axis_half_range_for_mode(frames_n, frames_p, "dynamic", axis_half_range, fidx)
+            for ax in axes:
+                set_axes(ax, half_range)
+        fig.suptitle(f"N-body model: t = {times[fidx]:.3f} T0")
+        return [scat_n, scat_p, *text_artists]
+
+    fps = max(2, min(30, int(round(1000.0 / max(int(frame_duration_ms), 1)))))
+    ani = FuncAnimation(fig, update, frames=len(selected), interval=max(int(frame_duration_ms), 1), blit=False)
+    with tempfile.NamedTemporaryFile(suffix=".gif", delete=False) as tmp:
+        tmp_name = tmp.name
+    try:
+        ani.save(tmp_name, writer=PillowWriter(fps=fps), dpi=110)
+        with open(tmp_name, "rb") as fh:
+            data = fh.read()
+    finally:
+        try:
+            os.remove(tmp_name)
+        except OSError:
+            pass
+        plt.close(fig)
+    return data
+
+
+# =============================================================================
 # UI
 # =============================================================================
 
@@ -1180,6 +1458,72 @@ fig = make_figure(
 st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True})
 st.caption(t("fixed_axes_note"))
 st.caption(t("caption"))
+
+st.subheader(t("export"))
+st.caption(t("protocol_note"))
+protocol_text = build_protocol_text(
+    language=language,
+    preset_name=str(st.session_state["preset"]),
+    n_bodies=n_bodies,
+    masses=masses,
+    initial_pos=pos0,
+    initial_vel=vel0,
+    times=times,
+    frames_n=frames_n,
+    frames_p=frames_p,
+    g_value=g_value,
+    softening=softening,
+    dt=dt,
+    frame_stride=frame_stride,
+    c_value=c_value,
+    pn_log10=pn_log10,
+    axis_scaling_mode=axis_scaling_mode,
+    axis_half_range=axis_half_range,
+    diag_n=diag_n,
+    diag_p=diag_p,
+    energy_drift=energy_drift,
+)
+st.download_button(
+    t("download_protocol"),
+    data=protocol_text.encode("utf-8"),
+    file_name="nbody_simulation_protocol.txt",
+    mime="text/plain",
+    use_container_width=True,
+)
+
+st.caption(t("gif_note"))
+gif_frames = st.slider(t("export_gif_frames"), 20, 180, int(st.session_state.get("export_gif_frames", DEFAULTS["export_gif_frames"])), step=10, key="export_gif_frames")
+export_signature = repr((
+    language, n_bodies, masses_tuple, pos_tuple, vel_tuple, g_value, softening,
+    total_time, dt, frame_stride, c_value, pn_log10, axis_half_range,
+    axis_scaling_mode, marker_base, marker_mass_gamma, gif_frames,
+    animation_frame_duration, orbit_curve_points,
+))
+if st.button(t("generate_gif"), use_container_width=True):
+    with st.spinner(t("gif_generating")):
+        st.session_state["export_gif_bytes"] = render_animation_gif(
+            times=times,
+            frames_n=frames_n,
+            frames_p=frames_p,
+            masses=masses,
+            axis_half_range=axis_half_range,
+            axis_scaling_mode=axis_scaling_mode,
+            base_marker=marker_base,
+            mass_gamma=marker_mass_gamma,
+            max_gif_frames=int(gif_frames),
+            frame_duration_ms=animation_frame_duration,
+            orbit_curve_points=orbit_curve_points,
+        )
+        st.session_state["export_gif_signature"] = export_signature
+if st.session_state.get("export_gif_signature") == export_signature and st.session_state.get("export_gif_bytes"):
+    st.success(t("gif_ready"))
+    st.download_button(
+        t("download_gif"),
+        data=st.session_state["export_gif_bytes"],
+        file_name="nbody_animation.gif",
+        mime="image/gif",
+        use_container_width=True,
+    )
 
 c1, c2, c3, c4 = st.columns(4)
 with c1:

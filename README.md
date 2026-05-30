@@ -44,3 +44,11 @@ README.md
 ## Notes
 
 The model is educational. It is not a full Einstein--Infeld--Hoffmann N-body ephemeris and not a numerical-relativity calculation.
+
+
+## Exports
+
+This version can export:
+
+- a plain-text simulation protocol (`.txt`) containing the current numerical parameters, initial masses, initial positions and velocities, and final Newton/1PN positions at the simulated final time;
+- an animated GIF of the Newton/1PN comparison. GIF rendering is performed only after pressing the export button, because server-side 3D rendering is more expensive than browser playback.
