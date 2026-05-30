@@ -880,6 +880,30 @@ Parametr $c$ má jednotku $L_0/T_0$ a určuje velikost relativistické korekce.
 "násobek 1PN" je pouze edukační lupa na relativistické členy.
             """
         )
+        st.markdown(
+            r"""
+**Výchozí scénáře.**  Rozbalovací menu *Preset počátečních podmínek* nabízí
+několik připravených konfigurací.  *Figure-eight 3-body orbit* je známé
+periodické řešení tří stejných hmotností, které v Newtonově teorii kreslí
+osmičku.  *Lagrange equilateral triple* ukazuje tři stejná tělesa v rotujícím
+rovnostranném trojúhelníku.  *Binary plus intruder* představuje téměř kruhovou
+dvojici narušenou lehčím třetím tělesem.  *N-body disk, N = 6* je hračkový disk
+s jedním centrálním tělesem a několika lehčími tělesy.  Tlačítko *Načíst
+zvolený preset* přepíše počáteční hmotnosti, polohy, rychlosti i doporučené
+parametry daného scénáře.
+
+**Ovládání aplikace.**  Nejprve lze zvolit jazyk a případně obnovit výchozí
+nastavení.  V levém panelu se vybírá preset, počet těles $N$, gravitační
+konstanta $G$, softening $\epsilon$, délka simulace, integrační krok $\Delta t$,
+parametry 1PN modelu a způsob zobrazení 3D boxu.  V části *Počáteční hmotnosti,
+polohy a rychlosti* lze každému tělesu samostatně nastavit $m_i$, $x_i,y_i,z_i$
+a $v_{x,i},v_{y,i},v_{z,i}$.  Protože výpočet trajektorie je nejdražší část,
+změny sliderů se do simulace promítnou až po tlačítku *Použít a přepočítat*.
+Samotné přehrávání probíhá v prohlížeči pomocí tlačítek *Play*, *Pause* a
+*Reset* nad grafem.  Graf lze ručně otáčet, přibližovat a posouvat nástroji
+Plotly.
+            """
+        )
         st.latex(r"\ddot{\mathbf r}_i=-\sum_{j\ne i}Gm_j\frac{\mathbf r_i-\mathbf r_j}{\left(|\mathbf r_i-\mathbf r_j|^2+\epsilon^2\right)^{3/2}}")
         st.markdown(
             r"""
@@ -927,6 +951,31 @@ The parameter $G$ controls the Newtonian gravitational strength in model units.
 The parameter $c$ has units $L_0/T_0$ and controls the size of the relativistic
 correction.  Larger $c$ brings the right panel closer to the Newtonian limit.
 The 1PN multiplier is only an educational magnifier for the relativistic terms.
+            """
+        )
+        st.markdown(
+            r"""
+**Default scenarios.**  The *Initial-condition preset* menu provides several
+ready-made configurations.  *Figure-eight 3-body orbit* is the well-known
+periodic equal-mass Newtonian solution in which the three bodies follow a common
+figure-eight curve.  *Lagrange equilateral triple* shows three equal masses in a
+rotating equilateral triangle.  *Binary plus intruder* starts from a nearly
+circular binary perturbed by a lighter third body.  *N-body disk, N = 6* is a toy
+disk-like system with one central mass and several lighter bodies.  Pressing
+*Load selected preset* replaces the initial masses, positions, velocities, and
+recommended numerical settings for the selected scenario.
+
+**How to control the app.**  The sidebar contains the language selector and the
+reset button.  Inside the control form one can select the preset, the number of
+bodies $N$, the gravitational constant $G$, the softening $\epsilon$, the
+integration time, the RK4 step $\Delta t$, the 1PN parameters, and the 3D
+view-box behavior.  In *Initial masses, positions and velocities* each body can
+be edited separately through $m_i$, $x_i,y_i,z_i$ and
+$v_{x,i},v_{y,i},v_{z,i}$.  Since recomputing the trajectory is the expensive
+step, slider changes are applied only after pressing *Apply and recompute*.
+Playback itself runs in the browser through the *Play*, *Pause*, and *Reset*
+buttons above the graph.  The Plotly view can be rotated, zoomed, and panned
+manually.
             """
         )
         st.latex(r"\ddot{\mathbf r}_i=-\sum_{j\ne i}Gm_j\frac{\mathbf r_i-\mathbf r_j}{\left(|\mathbf r_i-\mathbf r_j|^2+\epsilon^2\right)^{3/2}}")
