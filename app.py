@@ -43,6 +43,7 @@ DEFAULTS = {
     "frame_stride": 2,
     "trail_frames": 400,
     "axis_half_range": 1.5,
+    "axis_scaling": "fixed",
     "marker_base": 7.0,
     "marker_mass_gamma": 0.35,
     "log10_c": 2.0,
@@ -205,6 +206,10 @@ TR = {
         "pn_log10": "log10(1PN multiplier)",
         "display": "Display",
         "axis_half_range": "Fixed view-box half-width [L0]",
+        "axis_scaling": "View-box scaling mode",
+        "axis_fixed": "Fixed by slider",
+        "axis_full": "Fit full computed trajectory",
+        "axis_dynamic": "Dynamic auto-fit during playback",
         "marker_base": "Base marker diameter [px]",
         "marker_mass_gamma": "Marker mass compression gamma",
         "body_parameters": "Initial masses, positions and velocities",
@@ -238,7 +243,7 @@ TR = {
         "warning_steps": "The selected time span and time step would require too many RK4 steps. Increase Δt, shorten the simulation, or increase the displayed-frame stride.",
         "pn_warning": "The chosen parameters push the system outside the comfortable weak-field / slow-motion 1PN regime. The visualization may still be interesting, but it should not be interpreted as a quantitatively valid relativistic model.",
         "no_autorefresh": "Live playback requires streamlit-autorefresh. Use the Plotly Play button or install the package.",
-        "fixed_axes_note": "The 3D axes are fixed by the view-box slider during playback. Use Plotly zoom/pan/rotate to change the view.",
+        "fixed_axes_note": "In fixed mode the 3D axes are locked by the view-box slider; in dynamic mode the box auto-fits the moving bodies during playback. Manual Plotly zoom/pan/rotate is most stable in fixed mode.",
         "caption": "Marker diameters are visually compressed. They are not drawn on the same linear scale as the coordinates.",
         "sources": "References and sources",
         "units_caption": "The model uses arbitrary dimensionless units: length L0, time T0, mass M0. Velocities are in L0/T0 and G is set by the slider.",
@@ -265,6 +270,10 @@ TR = {
         "pn_log10": "log10(násobku 1PN)",
         "display": "Zobrazení",
         "axis_half_range": "Pevná polovina šířky boxu [L0]",
+        "axis_scaling": "Režim škálování boxu",
+        "axis_fixed": "Fixní podle posuvníku",
+        "axis_full": "Přizpůsobit celé spočtené trajektorii",
+        "axis_dynamic": "Dynamické přizpůsobování během přehrávání",
         "marker_base": "Základní průměr značky [px]",
         "marker_mass_gamma": "Komprese velikosti podle hmotnosti gamma",
         "body_parameters": "Počáteční hmotnosti, polohy a rychlosti",
@@ -298,7 +307,7 @@ TR = {
         "warning_steps": "Zvolená délka simulace a krok by vyžadovaly příliš mnoho RK4 kroků. Zvětši Δt, zkrať simulaci nebo zvětši stride zobrazených snímků.",
         "pn_warning": "Zvolené parametry posouvají systém mimo pohodlný slabopolní / pomalý 1PN režim. Vizualizace může být zajímavá, ale nemá být interpretována jako kvantitativně platný relativistický model.",
         "no_autorefresh": "Živé přehrávání vyžaduje streamlit-autorefresh. Použij Plotly Play tlačítko nebo balíček nainstaluj.",
-        "fixed_axes_note": "3D osy jsou během přehrávání fixovány posuvníkem velikosti boxu. Pohled lze změnit zoomem/posunem/rotací v Plotly.",
+        "fixed_axes_note": "Ve fixním režimu jsou 3D osy zamčené posuvníkem velikosti boxu; v dynamickém režimu se box během přehrávání přizpůsobuje pohybujícím se tělesům. Ruční zoom/posun/rotace v Plotly je nejstabilnější ve fixním režimu.",
         "caption": "Průměry značek jsou vizuálně komprimované. Nejsou kreslené ve stejném lineárním měřítku jako souřadnice.",
         "sources": "Reference a zdroje",
         "units_caption": "Model používá libovolné bezrozměrné jednotky: délku L0, čas T0 a hmotnost M0. Rychlosti jsou v L0/T0 a G nastavuje posuvník.",
@@ -611,6 +620,47 @@ def trail_slice(frame: int, trail_frames: int) -> slice:
     return slice(start, frame + 1)
 
 
+def axis_half_range_for_mode(
+    frames_n: np.ndarray,
+    frames_p: np.ndarray,
+    mode: str,
+    slider_half_range: float,
+    frame_index: int,
+) -> float:
+    """Return a symmetric half-range for the two 3D panels.
+
+    Modes:
+    - fixed: use only the user slider; this keeps the visual box constant.
+    - full: choose one constant box large enough for the whole computed trajectory.
+    - dynamic: recompute the box from the current Newton/1PN body positions.
+
+    The same half-range is used for the left and right panels so that the two
+    models remain visually comparable.
+    """
+    slider_half_range = max(float(slider_half_range), 0.1)
+    if mode == "full":
+        max_abs = float(max(np.max(np.abs(frames_n)), np.max(np.abs(frames_p))))
+        return max(slider_half_range, 1.12 * max_abs, 0.1)
+    if mode == "dynamic":
+        fidx = int(np.clip(frame_index, 0, len(frames_n) - 1))
+        max_abs = float(max(np.max(np.abs(frames_n[fidx])), np.max(np.abs(frames_p[fidx]))))
+        return max(slider_half_range, 1.20 * max_abs, 0.1)
+    return slider_half_range
+
+
+def axis_template_from_half_range(half_range: float, dynamic: bool = False) -> dict:
+    lim = max(float(half_range), 0.1)
+    template = dict(
+        xaxis=dict(title="x [L0]", range=[-lim, lim], autorange=False),
+        yaxis=dict(title="y [L0]", range=[-lim, lim], autorange=False),
+        zaxis=dict(title="z [L0]", range=[-lim, lim], autorange=False),
+        aspectmode="cube",
+    )
+    if not dynamic:
+        template["uirevision"] = "fixed-camera"
+    return template
+
+
 def make_figure(
     times: np.ndarray,
     frames_n: np.ndarray,
@@ -619,6 +669,7 @@ def make_figure(
     frame_index: int,
     trail_frames: int,
     axis_half_range: float,
+    axis_scaling_mode: str,
     base_marker: float,
     mass_gamma: float,
     animate: bool,
@@ -693,22 +744,20 @@ def make_figure(
     newton_marker_trace = add_model_static_paths_and_markers(frames_n, 1, "Newton")
     pn_marker_trace = add_model_static_paths_and_markers(frames_p, 2, "1PN")
 
-    lim = max(float(axis_half_range), 0.1)
-    axis_template = dict(
-        xaxis=dict(title="x [L0]", range=[-lim, lim], autorange=False),
-        yaxis=dict(title="y [L0]", range=[-lim, lim], autorange=False),
-        zaxis=dict(title="z [L0]", range=[-lim, lim], autorange=False),
-        aspectmode="cube",
-        uirevision="fixed-camera",
-    )
-    fig.update_layout(
+    axis_mode = str(axis_scaling_mode)
+    initial_half_range = axis_half_range_for_mode(frames_n, frames_p, axis_mode, axis_half_range, frame_index)
+    dynamic_axes = axis_mode == "dynamic"
+    axis_template = axis_template_from_half_range(initial_half_range, dynamic=dynamic_axes)
+    layout_kwargs = dict(
         scene=axis_template,
         scene2=axis_template,
         height=760,
         margin=dict(l=5, r=5, t=70, b=5),
         title=f"N-body model: t = {times[frame_index]:.3f} T0",
-        uirevision="fixed-camera",
     )
+    if not dynamic_axes:
+        layout_kwargs["uirevision"] = "fixed-camera"
+    fig.update_layout(**layout_kwargs)
 
     if animate:
         if n_total <= max_animation_frames:
@@ -720,16 +769,23 @@ def make_figure(
         for fidx in selected:
             pts_n = frames_n[fidx, :, :]
             pts_p = frames_p[fidx, :, :]
-            frames_out.append(
-                go.Frame(
-                    data=[
-                        go.Scatter3d(x=pts_n[:, 0], y=pts_n[:, 1], z=pts_n[:, 2], text=labels),
-                        go.Scatter3d(x=pts_p[:, 0], y=pts_p[:, 1], z=pts_p[:, 2], text=labels),
-                    ],
-                    traces=[newton_marker_trace, pn_marker_trace],
-                    name=str(fidx),
-                )
+            frame_kwargs = dict(
+                data=[
+                    go.Scatter3d(x=pts_n[:, 0], y=pts_n[:, 1], z=pts_n[:, 2], text=labels),
+                    go.Scatter3d(x=pts_p[:, 0], y=pts_p[:, 1], z=pts_p[:, 2], text=labels),
+                ],
+                traces=[newton_marker_trace, pn_marker_trace],
+                name=str(fidx),
             )
+            if dynamic_axes:
+                dyn_half_range = axis_half_range_for_mode(frames_n, frames_p, "dynamic", axis_half_range, fidx)
+                dyn_template = axis_template_from_half_range(dyn_half_range, dynamic=True)
+                frame_kwargs["layout"] = go.Layout(
+                    scene=dyn_template,
+                    scene2=dyn_template,
+                    title=f"N-body model: t = {times[fidx]:.3f} T0",
+                )
+            frames_out.append(go.Frame(**frame_kwargs))
         fig.frames = frames_out
         duration = max(int(animation_frame_duration), 1)
         fig.update_layout(
@@ -961,6 +1017,16 @@ with st.sidebar.form("nbody_controls_form"):
 
     st.header(t("display"))
     st.slider(t("axis_half_range"), 0.2, 10.0, step=0.1, key="axis_half_range")
+    st.selectbox(
+        t("axis_scaling"),
+        ("fixed", "full", "dynamic"),
+        format_func=lambda value: {
+            "fixed": t("axis_fixed"),
+            "full": t("axis_full"),
+            "dynamic": t("axis_dynamic"),
+        }.get(value, str(value)),
+        key="axis_scaling",
+    )
     st.slider(t("marker_base"), 2.0, 18.0, step=0.5, key="marker_base")
     st.slider(t("marker_mass_gamma"), 0.05, 1.0, step=0.05, key="marker_mass_gamma")
 
@@ -1011,6 +1077,7 @@ log10_c = float(st.session_state["log10_c"])
 c_value = 10.0 ** log10_c
 pn_log10 = float(st.session_state["pn_log10"])
 axis_half_range = float(st.session_state["axis_half_range"])
+axis_scaling_mode = str(st.session_state["axis_scaling"])
 marker_base = float(st.session_state["marker_base"])
 marker_mass_gamma = float(st.session_state["marker_mass_gamma"])
 max_animation_frames = int(st.session_state["max_animation_frames"])
@@ -1053,6 +1120,7 @@ fig = make_figure(
     frame_index=0,
     trail_frames=0,
     axis_half_range=axis_half_range,
+    axis_scaling_mode=axis_scaling_mode,
     base_marker=marker_base,
     mass_gamma=marker_mass_gamma,
     animate=True,
