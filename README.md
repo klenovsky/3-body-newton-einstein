@@ -11,8 +11,8 @@ This version is optimized for Streamlit Community Cloud:
 - moving sliders does not immediately recompute the simulation;
 - click **Apply and recompute** to apply changed parameters;
 - trajectories are computed once and cached;
-- trajectory curves are drawn as static downsampled 3D lines;
-- Plotly animation updates only the body marker positions in the browser;
+- trajectory curves are drawn progressively: at each animation frame only the already-travelled part is visible;
+- Plotly animation updates body positions and the progressive trajectory trails in the browser;
 - visible **Play / Pause / Reset** buttons are placed above the Plotly figure;
 - the 3D view box can be fixed, fitted to the full computed trajectory, or dynamically auto-fitted during playback.
 
@@ -52,3 +52,12 @@ This version can export:
 
 - a plain-text simulation protocol (`.txt`) containing the current numerical parameters, initial masses, initial positions and velocities, and final Newton/1PN positions at the simulated final time;
 - an animated GIF of the Newton/1PN comparison. GIF rendering is performed only after pressing the export button, because server-side 3D rendering is more expensive than browser playback.
+
+
+## Progressive trajectory trails
+
+The numerical trajectories are still precomputed after **Apply and recompute**.
+However, the displayed curves are progressive: at time `t` the app shows only the
+part of each path that has already been travelled from the initial condition up
+to that time. Future trajectory segments are not drawn before the bodies move.
+The same rule is used for the downloadable animated GIF.

@@ -237,7 +237,7 @@ TR = {
         "gif_note": "The GIF is rendered only after pressing the button. It uses a reduced number of frames so that export remains practical on the web server.",
         "download_protocol": "Download simulation protocol TXT",
         "protocol_note": "The protocol stores the current numerical parameters, initial masses, initial positions and velocities, and the final Newton/1PN positions at the simulated final time.",
-        "browser_animation_note": "Use the Play / Pause / Reset buttons above the Plotly graph. Playback runs in the browser; Streamlit does not rerun for every animation frame.",
+        "browser_animation_note": "Use the Play / Pause / Reset buttons above the Plotly graph. Playback runs in the browser; Streamlit does not rerun for every animation frame. Trajectory curves are progressive: only the already-travelled path is drawn.",
         "start": "▶ Start",
         "pause": "⏸ Pause",
         "reset_time": "↺ Reset time",
@@ -310,7 +310,7 @@ TR = {
         "gif_note": "GIF se renderuje až po stisku tlačítka. Používá omezený počet snímků, aby byl export na webovém serveru prakticky použitelný.",
         "download_protocol": "Stáhnout protokol simulace TXT",
         "protocol_note": "Protokol ukládá aktuální numerické parametry, počáteční hmotnosti, počáteční polohy a rychlosti a finální Newton/1PN polohy v konečném čase simulace.",
-        "browser_animation_note": "Použij tlačítka Play / Pauza / Reset nad Plotly grafem. Přehrávání běží v prohlížeči; Streamlit se nespouští znovu pro každý animační snímek.",
+        "browser_animation_note": "Použij tlačítka Play / Pauza / Reset nad Plotly grafem. Přehrávání běží v prohlížeči; Streamlit se nespouští znovu pro každý animační snímek. Křivky trajektorií jsou progresivní: kreslí se pouze již proletěná dráha.",
         "start": "▶ Start",
         "pause": "⏸ Pauza",
         "reset_time": "↺ Reset času",
@@ -641,6 +641,28 @@ def trail_slice(frame: int, trail_frames: int) -> slice:
     return slice(start, frame + 1)
 
 
+def progressive_path_indices(frame: int, trail_frames: int, max_points: int) -> np.ndarray:
+    """Indices for the already-travelled part of a trajectory.
+
+    If trail_frames <= 0, the full history from the beginning up to ``frame`` is
+    shown.  Otherwise only the last ``trail_frames`` displayed frames are shown.
+    The returned indices are downsampled to at most ``max_points`` so that the
+    browser and GIF export remain usable.
+    """
+    fidx = max(int(frame), 0)
+    if int(trail_frames) > 0:
+        start = max(0, fidx - int(trail_frames) + 1)
+    else:
+        start = 0
+    max_points = max(int(max_points), 2)
+    count = fidx - start + 1
+    if count <= 1:
+        return np.array([fidx], dtype=int)
+    if count <= max_points:
+        return np.arange(start, fidx + 1, dtype=int)
+    return np.unique(np.linspace(start, fidx, max_points).astype(int))
+
+
 def axis_half_range_for_mode(
     frames_n: np.ndarray,
     frames_p: np.ndarray,
@@ -698,15 +720,12 @@ def make_figure(
     orbit_curve_points: int,
     animation_frame_duration: int,
 ) -> go.Figure:
-    """Build a fast Plotly 3D figure.
+    """Build a Plotly 3D figure with progressive trajectory trails.
 
-    Important performance choice:
-    - trajectory curves are static, downsampled lines;
-    - browser animation updates only the two marker traces, not all trail lines;
-    - no Streamlit autorefresh is used for playback.
-
-    This keeps the generated HTML/JSON much smaller than dynamic trails in every
-    frame and makes the Play button usable on Streamlit Community Cloud.
+    The numerical trajectory is still precomputed and cached after pressing
+    Apply and recompute. The display, however, shows only the part of each
+    trajectory that has already been travelled up to the current animation
+    frame. Future trajectory segments are not drawn before the bodies move.
     """
     n = len(masses)
     labels = body_labels(n)
@@ -722,18 +741,15 @@ def make_figure(
         horizontal_spacing=0.02,
     )
 
-    # Downsample only the static trajectory curves.  The integrator still uses
-    # the full RK4 resolution; this affects plotting only.
     n_total = len(times)
     max_curve_points = max(int(orbit_curve_points), 10)
-    if n_total <= max_curve_points:
-        path_idx = np.arange(n_total, dtype=int)
-    else:
-        path_idx = np.unique(np.linspace(0, n_total - 1, max_curve_points).astype(int))
 
-    def add_model_static_paths_and_markers(frames: np.ndarray, col: int, prefix: str) -> int:
+    def add_model_progressive_paths_and_markers(frames: np.ndarray, col: int, prefix: str) -> tuple[list[int], int]:
+        line_trace_indices: list[int] = []
+        path_idx = progressive_path_indices(frame_index, trail_frames, max_curve_points)
         for i in range(n):
             xyz = frames[path_idx, i, :]
+            line_trace_indices.append(len(fig.data))
             fig.add_trace(
                 go.Scatter3d(
                     x=xyz[:, 0], y=xyz[:, 1], z=xyz[:, 2],
@@ -760,10 +776,11 @@ def make_figure(
             ),
             row=1, col=col,
         )
-        return marker_trace_index
+        return line_trace_indices, marker_trace_index
 
-    newton_marker_trace = add_model_static_paths_and_markers(frames_n, 1, "Newton")
-    pn_marker_trace = add_model_static_paths_and_markers(frames_p, 2, "1PN")
+    newton_line_traces, newton_marker_trace = add_model_progressive_paths_and_markers(frames_n, 1, "Newton")
+    pn_line_traces, pn_marker_trace = add_model_progressive_paths_and_markers(frames_p, 2, "1PN")
+    all_trace_indices = newton_line_traces + [newton_marker_trace] + pn_line_traces + [pn_marker_trace]
 
     axis_mode = str(axis_scaling_mode)
     initial_half_range = axis_half_range_for_mode(frames_n, frames_p, axis_mode, axis_half_range, frame_index)
@@ -788,16 +805,20 @@ def make_figure(
 
         frames_out = []
         for fidx in selected:
+            path_idx = progressive_path_indices(fidx, trail_frames, max_curve_points)
             pts_n = frames_n[fidx, :, :]
             pts_p = frames_p[fidx, :, :]
-            frame_kwargs = dict(
-                data=[
-                    go.Scatter3d(x=pts_n[:, 0], y=pts_n[:, 1], z=pts_n[:, 2], text=labels),
-                    go.Scatter3d(x=pts_p[:, 0], y=pts_p[:, 1], z=pts_p[:, 2], text=labels),
-                ],
-                traces=[newton_marker_trace, pn_marker_trace],
-                name=str(fidx),
-            )
+            frame_data = []
+            for i in range(n):
+                xyz = frames_n[path_idx, i, :]
+                frame_data.append(go.Scatter3d(x=xyz[:, 0], y=xyz[:, 1], z=xyz[:, 2]))
+            frame_data.append(go.Scatter3d(x=pts_n[:, 0], y=pts_n[:, 1], z=pts_n[:, 2], text=labels))
+            for i in range(n):
+                xyz = frames_p[path_idx, i, :]
+                frame_data.append(go.Scatter3d(x=xyz[:, 0], y=xyz[:, 1], z=xyz[:, 2]))
+            frame_data.append(go.Scatter3d(x=pts_p[:, 0], y=pts_p[:, 1], z=pts_p[:, 2], text=labels))
+
+            frame_kwargs = dict(data=frame_data, traces=all_trace_indices, name=str(fidx))
             if dynamic_axes:
                 dyn_half_range = axis_half_range_for_mode(frames_n, frames_p, "dynamic", axis_half_range, fidx)
                 dyn_template = axis_template_from_half_range(dyn_half_range, dynamic=True)
@@ -843,6 +864,7 @@ def make_figure(
                     x=0.1,
                     y=0.01,
                     len=0.8,
+                    currentvalue={"prefix": "t = ", "suffix": " T0"},
                     steps=[
                         dict(
                             method="animate",
@@ -854,6 +876,7 @@ def make_figure(
                 )
             ],
         )
+
     return fig
 
 
@@ -1013,9 +1036,8 @@ def render_animation_gif(
 ) -> bytes:
     """Render the current comparison as a downloadable animated GIF.
 
-    The browser Plotly animation is faster for interaction.  This GIF export is
-    deliberately rendered only on demand because server-side 3D image rendering
-    is relatively expensive on Streamlit Community Cloud.
+    The GIF follows the same progressive-trail logic as the browser animation:
+    at each frame it draws only the already-travelled part of the trajectory.
     """
     import matplotlib
     matplotlib.use("Agg")
@@ -1027,13 +1049,7 @@ def render_animation_gif(
     colors = BODY_COLORS[:n]
     sizes = marker_sizes(masses, base_marker, mass_gamma)
     selected = selected_frame_indices(len(times), max_gif_frames)
-
-    n_total = len(times)
     max_curve_points = max(int(orbit_curve_points), 10)
-    if n_total <= max_curve_points:
-        path_idx = np.arange(n_total, dtype=int)
-    else:
-        path_idx = np.unique(np.linspace(0, n_total - 1, max_curve_points).astype(int))
 
     dynamic_axes = str(axis_scaling_mode) == "dynamic"
     initial_half_range = axis_half_range_for_mode(frames_n, frames_p, str(axis_scaling_mode), axis_half_range, int(selected[0]))
@@ -1056,15 +1072,25 @@ def render_animation_gif(
         except Exception:
             pass
 
-    for ax, frames, title in ((ax_n, frames_n, t("newton_title")), (ax_p, frames_p, t("pn_title"))):
-        for i in range(n):
-            xyz = frames[path_idx, i, :]
-            ax.plot(xyz[:, 0], xyz[:, 1], xyz[:, 2], color=colors[i], linewidth=1.2, alpha=0.85)
-        ax.set_title(title)
+    ax_n.set_title(t("newton_title"))
+    ax_p.set_title(t("pn_title"))
+    for ax in axes:
         set_axes(ax, initial_half_range)
 
-    pts_n0 = frames_n[int(selected[0]), :, :]
-    pts_p0 = frames_p[int(selected[0]), :, :]
+    first_idx = int(selected[0])
+    first_path = progressive_path_indices(first_idx, 0, max_curve_points)
+    line_artists_n = []
+    line_artists_p = []
+    for i in range(n):
+        xyz_n = frames_n[first_path, i, :]
+        xyz_p = frames_p[first_path, i, :]
+        (line_n,) = ax_n.plot(xyz_n[:, 0], xyz_n[:, 1], xyz_n[:, 2], color=colors[i], linewidth=1.2, alpha=0.85)
+        (line_p,) = ax_p.plot(xyz_p[:, 0], xyz_p[:, 1], xyz_p[:, 2], color=colors[i], linewidth=1.2, alpha=0.85)
+        line_artists_n.append(line_n)
+        line_artists_p.append(line_p)
+
+    pts_n0 = frames_n[first_idx, :, :]
+    pts_p0 = frames_p[first_idx, :, :]
     scat_n = ax_n.scatter(pts_n0[:, 0], pts_n0[:, 1], pts_n0[:, 2], s=[s * s for s in sizes], c=colors, depthshade=True)
     scat_p = ax_p.scatter(pts_p0[:, 0], pts_p0[:, 1], pts_p0[:, 2], s=[s * s for s in sizes], c=colors, depthshade=True)
     text_artists = []
@@ -1078,11 +1104,19 @@ def render_animation_gif(
     text_artists.extend(update_texts(ax_n, pts_n0))
     text_artists.extend(update_texts(ax_p, pts_p0))
 
+    def set_line_3d(line, xyz):
+        line.set_data(xyz[:, 0], xyz[:, 1])
+        line.set_3d_properties(xyz[:, 2])
+
     def update(k):
         nonlocal text_artists
         fidx = int(selected[k])
+        path_idx = progressive_path_indices(fidx, 0, max_curve_points)
         pts_n = frames_n[fidx, :, :]
         pts_p = frames_p[fidx, :, :]
+        for i in range(n):
+            set_line_3d(line_artists_n[i], frames_n[path_idx, i, :])
+            set_line_3d(line_artists_p[i], frames_p[path_idx, i, :])
         scat_n._offsets3d = (pts_n[:, 0], pts_n[:, 1], pts_n[:, 2])
         scat_p._offsets3d = (pts_p[:, 0], pts_p[:, 1], pts_p[:, 2])
         for artist in text_artists:
@@ -1095,12 +1129,14 @@ def render_animation_gif(
             for ax in axes:
                 set_axes(ax, half_range)
         fig.suptitle(f"N-body model: t = {times[fidx]:.3f} T0")
-        return [scat_n, scat_p, *text_artists]
+        return [*line_artists_n, *line_artists_p, scat_n, scat_p, *text_artists]
 
     fps = max(2, min(30, int(round(1000.0 / max(int(frame_duration_ms), 1)))))
     ani = FuncAnimation(fig, update, frames=len(selected), interval=max(int(frame_duration_ms), 1), blit=False)
-    with tempfile.NamedTemporaryFile(suffix=".gif", delete=False) as tmp:
-        tmp_name = tmp.name
+    import tempfile
+    tmp = tempfile.NamedTemporaryFile(suffix=".gif", delete=False)
+    tmp_name = tmp.name
+    tmp.close()
     try:
         ani.save(tmp_name, writer=PillowWriter(fps=fps), dpi=110)
         with open(tmp_name, "rb") as fh:
@@ -1179,7 +1215,9 @@ a $v_{x,i},v_{y,i},v_{z,i}$.  Protože výpočet trajektorie je nejdražší č�
 změny sliderů se do simulace promítnou až po tlačítku *Použít a přepočítat*.
 Samotné přehrávání probíhá v prohlížeči pomocí tlačítek *Play*, *Pause* a
 *Reset* nad grafem.  Graf lze ručně otáčet, přibližovat a posouvat nástroji
-Plotly.
+Plotly.  Trajektorie se po stisku *Použít a přepočítat* nejprve spočítají a uloží,
+ale při animaci se kreslí pouze již proletěná část dráhy.  Budoucí část dráhy
+se tedy nezobrazuje před pohybem těles.
             """
         )
         st.latex(r"\ddot{\mathbf r}_i=-\sum_{j\ne i}Gm_j\frac{\mathbf r_i-\mathbf r_j}{\left(|\mathbf r_i-\mathbf r_j|^2+\epsilon^2\right)^{3/2}}")
@@ -1253,7 +1291,9 @@ $v_{x,i},v_{y,i},v_{z,i}$.  Since recomputing the trajectory is the expensive
 step, slider changes are applied only after pressing *Apply and recompute*.
 Playback itself runs in the browser through the *Play*, *Pause*, and *Reset*
 buttons above the graph.  The Plotly view can be rotated, zoomed, and panned
-manually.
+manually.  After *Apply and recompute* the trajectories are precomputed and
+stored, but the animation draws only the already-travelled part of each path.
+Future trajectory segments are not shown before the bodies move.
             """
         )
         st.latex(r"\ddot{\mathbf r}_i=-\sum_{j\ne i}Gm_j\frac{\mathbf r_i-\mathbf r_j}{\left(|\mathbf r_i-\mathbf r_j|^2+\epsilon^2\right)^{3/2}}")
