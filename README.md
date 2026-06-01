@@ -1,28 +1,21 @@
-# Fast browser-animated N-body Streamlit app
+# Interactive N-body problem: Newton vs. 1PN
 
-This Streamlit app visualizes a toy 3D N-body gravitational problem.
+Streamlit web application for an educational three-body / N-body gravity playground.
 
-The left panel integrates Newtonian gravity. The right panel integrates Newtonian gravity plus a pairwise two-body first post-Newtonian (1PN) correction inspired by General Relativity.
+The app compares:
 
-This version is optimized for Streamlit Community Cloud:
+- **Newton gravity**
+- **Einstein GTR 1PN approximation** using a pairwise two-body first post-Newtonian correction
 
-- it does **not** use `streamlit-autorefresh`;
-- all expensive controls are inside a Streamlit form;
-- moving sliders does not immediately recompute the simulation;
-- click **Apply and recompute** to apply changed parameters;
-- trajectories are computed once and cached;
-- trajectory curves are drawn progressively: at each animation frame only the already-travelled part is visible;
-- Plotly animation updates body positions and the progressive trajectory trails in the browser;
-- visible **Play / Pause / Reset** buttons are placed above the Plotly figure;
-- the 3D view box can be fixed, fitted to the full computed trajectory, or dynamically auto-fitted during playback.
+It is designed for teaching and exploration. It is not a precision ephemeris and not a full Einstein-Infeld-Hoffmann numerical-relativity solver.
 
-## Axis scaling modes
+## Files
 
-The sidebar control **View-box scaling mode** has three options:
-
-- **Fixed by slider**: the 3D axes use the selected fixed half-width and do not change during playback. This is best for stable manual zoom, pan, and rotation.
-- **Fit full computed trajectory**: the app chooses one constant box large enough for the whole computed trajectory.
-- **Dynamic auto-fit during playback**: the box is recomputed from the current body positions during the Plotly animation, so the displayed region can expand or shrink as the system evolves.
+```text
+app.py
+requirements.txt
+README.md
+```
 
 ## Local run
 
@@ -31,33 +24,25 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-## Deploy
+## Deploy on Streamlit Community Cloud
 
-Upload these files to a GitHub repository and deploy `app.py` on Streamlit Community Cloud:
+1. Create or open a GitHub repository.
+2. Upload `app.py`, `requirements.txt`, and `README.md` to the repository root.
+3. In Streamlit Community Cloud create or reboot the app.
+4. Set the main file path to `app.py`.
 
-```text
-app.py
-requirements.txt
-README.md
-```
+## Performance notes
 
-## Notes
+This version includes two speed improvements:
 
-The model is educational. It is not a full Einstein--Infeld--Hoffmann N-body ephemeris and not a numerical-relativity calculation.
+1. The Newtonian acceleration is vectorized with NumPy broadcasting instead of a Python double loop.
+2. Visual-only controls are outside the expensive **Apply and recompute** form. Changing marker sizes, view-box scaling, animation-frame count, or trajectory curve density does not trigger a new numerical integration. Only physical/numerical changes such as masses, initial positions, velocities, `G`, `dt`, simulation time, `c`, or the 1PN multiplier require **Apply and recompute**.
 
+The app also supports:
 
-## Exports
-
-This version can export:
-
-- a plain-text simulation protocol (`.txt`) containing the current numerical parameters, initial masses, initial positions and velocities, and final Newton/1PN positions at the simulated final time;
-- an animated GIF of the Newton/1PN comparison. GIF rendering is performed only after pressing the export button, because server-side 3D rendering is more expensive than browser playback.
-
-
-## Progressive trajectory trails
-
-The numerical trajectories are still precomputed after **Apply and recompute**.
-However, the displayed curves are progressive: at time `t` the app shows only the
-part of each path that has already been travelled from the initial condition up
-to that time. Future trajectory segments are not drawn before the bodies move.
-The same rule is used for the downloadable animated GIF.
+- progressive trajectory drawing,
+- animated Plotly playback,
+- GIF export,
+- TXT simulation protocol export,
+- English/Czech interface,
+- fixed/full/dynamic 3D view-box scaling.

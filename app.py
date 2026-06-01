@@ -208,6 +208,7 @@ TR = {
         "log10_c": "log10(c [L0/T0])",
         "pn_log10": "log10(1PN multiplier)",
         "display": "Display",
+        "visual_controls_no_recompute": "Visual controls (no recompute)",
         "axis_half_range": "Fixed view-box half-width [L0]",
         "axis_scaling": "View-box scaling mode",
         "axis_fixed": "Fixed by slider",
@@ -281,6 +282,7 @@ TR = {
         "log10_c": "log10(c [L0/T0])",
         "pn_log10": "log10(násobku 1PN)",
         "display": "Zobrazení",
+        "visual_controls_no_recompute": "Vizuální ovládání (bez přepočtu)",
         "axis_half_range": "Pevná polovina šířky boxu [L0]",
         "axis_scaling": "Režim škálování boxu",
         "axis_fixed": "Fixní podle posuvníku",
@@ -428,17 +430,34 @@ def collect_initial_conditions(n: int) -> tuple[np.ndarray, np.ndarray, np.ndarr
 
 
 def acceleration_newton(pos: np.ndarray, masses: np.ndarray, g_value: float, softening: float) -> np.ndarray:
+    """Vectorized Newtonian N-body acceleration with Plummer-like softening.
+
+    This replaces the older double Python loop by NumPy broadcasting.  For the
+    small interactive systems used here the physics is unchanged, but the RK4
+    integration is noticeably faster because the acceleration is evaluated four
+    times per RK4 step and once for each Newton/1PN model evaluation.
+    """
+    pos = np.asarray(pos, dtype=float)
+    masses = np.asarray(masses, dtype=float)
     n = len(masses)
-    acc = np.zeros_like(pos)
-    eps2 = float(softening) ** 2
-    for i in range(n):
-        for j in range(n):
-            if i == j or masses[j] == 0.0:
-                continue
-            dr = pos[i] - pos[j]
-            r2 = float(np.dot(dr, dr)) + eps2
-            inv_r3 = 1.0 / (r2 * math.sqrt(r2))
-            acc[i] += -g_value * masses[j] * dr * inv_r3
+    if n == 0:
+        return np.zeros_like(pos)
+
+    # dr[i,j] = r_i - r_j.  Body j contributes
+    #   -G m_j (r_i-r_j) / (|r_i-r_j|^2+eps^2)^(3/2)
+    # to body i.  The diagonal i=j is explicitly masked out, which is important
+    # also when softening is set to zero.
+    dr = pos[:, None, :] - pos[None, :, :]
+    r2 = np.sum(dr * dr, axis=2) + float(softening) ** 2
+    mask = ~np.eye(n, dtype=bool)
+    mass_mask = masses[None, :] > 0.0
+    valid = mask & mass_mask
+
+    inv_r3 = np.zeros_like(r2, dtype=float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        inv_r3[valid] = 1.0 / (r2[valid] * np.sqrt(r2[valid]))
+
+    acc = -float(g_value) * np.sum(masses[None, :, None] * dr * inv_r3[:, :, None], axis=1)
     return acc
 
 
@@ -1173,6 +1192,7 @@ if _pending_preset is not None:
 # trajectory calculation is cached and depends only on the physical parameters.
 language = st.sidebar.selectbox(t("language"), ("English", "Čeština"), key="language")
 st.title(t("title"))
+st.caption("Build: N-body v2 fast tuning (vectorized Newton + visual-only controls)")
 
 if st.sidebar.button(t("reset_initial"), use_container_width=True):
     st.session_state["_reset_requested"] = True
@@ -1212,9 +1232,11 @@ konstanta $G$, softening $\epsilon$, délka simulace, integrační krok $\Delta 
 parametry 1PN modelu a způsob zobrazení 3D boxu.  V části *Počáteční hmotnosti,
 polohy a rychlosti* lze každému tělesu samostatně nastavit $m_i$, $x_i,y_i,z_i$
 a $v_{x,i},v_{y,i},v_{z,i}$.  Protože výpočet trajektorie je nejdražší část,
-změny sliderů se do simulace promítnou až po tlačítku *Použít a přepočítat*.
-Samotné přehrávání probíhá v prohlížeči pomocí tlačítek *Play*, *Pause* a
-*Reset* nad grafem.  Graf lze ručně otáčet, přibližovat a posouvat nástroji
+změny fyzikálních sliderů se do simulace promítnou až po tlačítku *Použít a přepočítat*.
+Čistě vizuální volby, například velikost značek, rozsah 3D boxu nebo počet
+animačních snímků, jsou mimo tento formulář a nevyvolávají novou numerickou
+integraci. Samotné přehrávání probíhá v prohlížeči pomocí tlačítek *Play*,
+*Pause* a *Reset* nad grafem.  Graf lze ručně otáčet, přibližovat a posouvat nástroji
 Plotly.  Trajektorie se po stisku *Použít a přepočítat* nejprve spočítají a uloží,
 ale při animaci se kreslí pouze již proletěná část dráhy.  Budoucí část dráhy
 se tedy nezobrazuje před pohybem těles.
@@ -1288,9 +1310,11 @@ integration time, the RK4 step $\Delta t$, the 1PN parameters, and the 3D
 view-box behavior.  In *Initial masses, positions and velocities* each body can
 be edited separately through $m_i$, $x_i,y_i,z_i$ and
 $v_{x,i},v_{y,i},v_{z,i}$.  Since recomputing the trajectory is the expensive
-step, slider changes are applied only after pressing *Apply and recompute*.
-Playback itself runs in the browser through the *Play*, *Pause*, and *Reset*
-buttons above the graph.  The Plotly view can be rotated, zoomed, and panned
+step, physical slider changes are applied only after pressing *Apply and recompute*.
+Purely visual controls, such as marker sizes, 3D view-box scaling, and the
+number of animation frames, are outside this form and do not trigger a new
+numerical integration. Playback itself runs in the browser through the *Play*,
+*Pause*, and *Reset* buttons above the graph.  The Plotly view can be rotated, zoomed, and panned
 manually.  After *Apply and recompute* the trajectories are precomputed and
 stored, but the animation draws only the already-travelled part of each path.
 Future trajectory segments are not shown before the bodies move.
@@ -1382,26 +1406,6 @@ with st.sidebar.form("nbody_controls_form"):
     st.slider(t("pn_log10"), -4.0, 6.0, step=0.1, key="pn_log10")
     st.caption(f"1PN multiplier = {10.0 ** float(st.session_state['pn_log10']):.4g}")
 
-    st.header(t("display"))
-    st.slider(t("axis_half_range"), 0.2, 10.0, step=0.1, key="axis_half_range")
-    st.selectbox(
-        t("axis_scaling"),
-        ("fixed", "full", "dynamic"),
-        format_func=lambda value: {
-            "fixed": t("axis_fixed"),
-            "full": t("axis_full"),
-            "dynamic": t("axis_dynamic"),
-        }.get(value, str(value)),
-        key="axis_scaling",
-    )
-    st.slider(t("marker_base"), 2.0, 18.0, step=0.5, key="marker_base")
-    st.slider(t("marker_mass_gamma"), 0.05, 1.0, step=0.05, key="marker_mass_gamma")
-
-    st.header(t("playback"))
-    st.slider(t("max_animation_frames"), 20, 300, step=10, key="max_animation_frames")
-    st.slider(t("animation_frame_duration"), 10, 200, step=10, key="animation_frame_duration")
-    st.slider(t("orbit_curve_points"), 100, 2500, step=100, key="orbit_curve_points")
-
     n_for_widgets = int(st.session_state.get("n_bodies", DEFAULTS["n_bodies"]))
     with st.expander(t("body_parameters"), expanded=False):
         for i in range(n_for_widgets):
@@ -1429,6 +1433,27 @@ if load_preset_clicked:
     st.rerun()
 if apply_clicked:
     st.session_state["manual_frame"] = 0
+
+# Visual-only controls are intentionally outside the expensive Apply form.
+# They may rerun the Streamlit script, but they do not change the cached
+# integration inputs, so the numerical trajectories are reused.
+st.sidebar.header(t("visual_controls_no_recompute"))
+st.sidebar.slider(t("axis_half_range"), 0.2, 10.0, step=0.1, key="axis_half_range")
+st.sidebar.selectbox(
+    t("axis_scaling"),
+    ("fixed", "full", "dynamic"),
+    format_func=lambda value: {
+        "fixed": t("axis_fixed"),
+        "full": t("axis_full"),
+        "dynamic": t("axis_dynamic"),
+    }.get(value, str(value)),
+    key="axis_scaling",
+)
+st.sidebar.slider(t("marker_base"), 2.0, 18.0, step=0.5, key="marker_base")
+st.sidebar.slider(t("marker_mass_gamma"), 0.05, 1.0, step=0.05, key="marker_mass_gamma")
+st.sidebar.slider(t("max_animation_frames"), 20, 300, step=10, key="max_animation_frames")
+st.sidebar.slider(t("animation_frame_duration"), 10, 200, step=10, key="animation_frame_duration")
+st.sidebar.slider(t("orbit_curve_points"), 100, 2500, step=100, key="orbit_curve_points")
 
 st.info(t("units_caption"))
 st.info(t("browser_animation_note"))
