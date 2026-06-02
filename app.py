@@ -393,13 +393,25 @@ def load_preset_to_state(preset_name: str, reset_playback: bool = True) -> None:
 
 
 def reset_to_initial_state() -> None:
+    """Reset all app parameters while preserving the currently selected language.
+
+    Streamlit widget values can only be safely overwritten before the widgets
+    are instantiated.  This function is called at the beginning of a rerun after
+    the reset button has set the internal ``_reset_requested`` flag.
+    """
+    current_language = st.session_state.get("language", DEFAULTS.get("language", "English"))
+    if current_language not in ("English", "Čeština"):
+        current_language = DEFAULTS.get("language", "English")
+
     for key in list(st.session_state.keys()):
         if key.startswith("_"):
             continue
     for key, value in DEFAULTS.items():
+        if key == "language":
+            continue
         st.session_state[key] = value
     load_preset_to_state("Figure-eight 3-body orbit", reset_playback=True)
-    st.session_state["language"] = "English"
+    st.session_state["language"] = current_language
     st.session_state["running"] = False
     st.session_state["live_frame"] = 0
 
@@ -1192,7 +1204,7 @@ if _pending_preset is not None:
 # trajectory calculation is cached and depends only on the physical parameters.
 language = st.sidebar.selectbox(t("language"), ("English", "Čeština"), key="language")
 st.title(t("title"))
-st.caption("Build: N-body v2 fast tuning (vectorized Newton + visual-only controls)")
+st.caption("Build: N-body v3 reset preserves language")
 
 if st.sidebar.button(t("reset_initial"), use_container_width=True):
     st.session_state["_reset_requested"] = True

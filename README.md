@@ -46,3 +46,8 @@ The app also supports:
 - TXT simulation protocol export,
 - English/Czech interface,
 - fixed/full/dynamic 3D view-box scaling.
+
+
+## Reset behavior
+
+The `Reset to initial values` button restores the default physical, numerical, display, playback, and export parameters while preserving the currently selected interface language.
