@@ -256,7 +256,7 @@ TR = {
         "warning_steps": "The selected time span and time step would require too many RK4 steps. Increase Δt, shorten the simulation, or increase the displayed-frame stride.",
         "pn_warning": "The chosen parameters push the system outside the comfortable weak-field / slow-motion 1PN regime. The visualization may still be interesting, but it should not be interpreted as a quantitatively valid relativistic model.",
         "no_autorefresh": "Live playback requires streamlit-autorefresh. Use the Plotly Play button or install the package.",
-        "fixed_axes_note": "In fixed mode the 3D axes are locked by the view-box slider; in dynamic mode the box auto-fits the moving bodies during playback. Manual Plotly zoom/pan/rotate is most stable in fixed mode.",
+        "fixed_axes_note": "In fixed mode the 3D axes are locked by the view-box slider. In full-trajectory mode the box is fitted once to all computed positions. In dynamic mode the fixed slider is ignored and the box is fitted only to the currently moving bodies, so it no longer jumps to a large default box just because the fixed view-box slider was large. Manual Plotly zoom/pan/rotate is most stable in fixed mode.",
         "caption": "Marker diameters are visually compressed. They are not drawn on the same linear scale as the coordinates.",
         "sources": "References and sources",
         "units_caption": "The model uses arbitrary dimensionless units: length L0, time T0, mass M0. Velocities are in L0/T0 and G is set by the slider.",
@@ -330,7 +330,7 @@ TR = {
         "warning_steps": "Zvolená délka simulace a krok by vyžadovaly příliš mnoho RK4 kroků. Zvětši Δt, zkrať simulaci nebo zvětši stride zobrazených snímků.",
         "pn_warning": "Zvolené parametry posouvají systém mimo pohodlný slabopolní / pomalý 1PN režim. Vizualizace může být zajímavá, ale nemá být interpretována jako kvantitativně platný relativistický model.",
         "no_autorefresh": "Živé přehrávání vyžaduje streamlit-autorefresh. Použij Plotly Play tlačítko nebo balíček nainstaluj.",
-        "fixed_axes_note": "Ve fixním režimu jsou 3D osy zamčené posuvníkem velikosti boxu; v dynamickém režimu se box během přehrávání přizpůsobuje pohybujícím se tělesům. Ruční zoom/posun/rotace v Plotly je nejstabilnější ve fixním režimu.",
+        "fixed_axes_note": "Ve fixním režimu jsou 3D osy zamčené posuvníkem velikosti boxu. V režimu celé trajektorie se box jednou nastaví podle všech spočtených poloh. V dynamickém režimu se pevný posuvník ignoruje a box se přizpůsobuje jen aktuálně pohybujícím se tělesům, takže po přepnutí do dynamického režimu už neskočí na velký defaultní box kvůli dříve velké pevné hodnotě. Ruční zoom/posun/rotace v Plotly je nejstabilnější ve fixním režimu.",
         "caption": "Průměry značek jsou vizuálně komprimované. Nejsou kreslené ve stejném lineárním měřítku jako souřadnice.",
         "sources": "Reference a zdroje",
         "units_caption": "Model používá libovolné bezrozměrné jednotky: délku L0, čas T0 a hmotnost M0. Rychlosti jsou v L0/T0 a G nastavuje posuvník.",
@@ -706,7 +706,14 @@ def axis_half_range_for_mode(
     Modes:
     - fixed: use only the user slider; this keeps the visual box constant.
     - full: choose one constant box large enough for the whole computed trajectory.
-    - dynamic: recompute the box from the current Newton/1PN body positions.
+    - dynamic: recompute the box from the *current* Newton/1PN body positions.
+
+    Important detail: in dynamic mode the fixed view-box slider is intentionally
+    not used as a lower bound. Otherwise switching from a large manually chosen
+    fixed box to dynamic mode would immediately make the dynamic box huge before
+    the animation even starts. The dynamic mode therefore starts from the actual
+    current body positions and then grows/shrinks only as the displayed bodies
+    move. The small numerical floor only prevents a nearly zero-size box.
 
     The same half-range is used for the left and right panels so that the two
     models remain visually comparable.
@@ -718,7 +725,9 @@ def axis_half_range_for_mode(
     if mode == "dynamic":
         fidx = int(np.clip(frame_index, 0, len(frames_n) - 1))
         max_abs = float(max(np.max(np.abs(frames_n[fidx])), np.max(np.abs(frames_p[fidx]))))
-        return max(slider_half_range, 1.20 * max_abs, 0.1)
+        if not np.isfinite(max_abs):
+            max_abs = 0.0
+        return max(1.20 * max_abs, 0.25)
     return slider_half_range
 
 
@@ -1204,7 +1213,7 @@ if _pending_preset is not None:
 # trajectory calculation is cached and depends only on the physical parameters.
 language = st.sidebar.selectbox(t("language"), ("English", "Čeština"), key="language")
 st.title(t("title"))
-st.caption("Build: N-body v3 reset preserves language")
+st.caption("Build: N-body v4 dynamic axis fix")
 
 if st.sidebar.button(t("reset_initial"), use_container_width=True):
     st.session_state["_reset_requested"] = True
